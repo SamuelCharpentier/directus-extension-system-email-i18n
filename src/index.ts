@@ -1,5 +1,5 @@
 import type { EmailOptions, HookConfig } from '@directus/types';
-import { fetchDefaultLang, fetchUserLang } from './directus';
+import { fetchDefaultLang, fetchProjectName, fetchUserLang } from './directus';
 import { applyTranslationsToEmail, extractRecipientEmail } from './email';
 import { extractTemplateTrans, resolveLocale } from './locale';
 
@@ -19,9 +19,10 @@ const hook: HookConfig = ({ filter }, { services, logger, getSchema, env }) => {
 			const schema = await getSchema();
 			const recipientEmail = extractRecipientEmail(input.to);
 
-			const [defaultLang, userLang] = await Promise.all([
+			const [defaultLang, userLang, projectName] = await Promise.all([
 				fetchDefaultLang(services, schema, env),
-				fetchUserLang(recipientEmail, services, schema),
+				recipientEmail ? fetchUserLang(recipientEmail, services, schema) : null,
+				fetchProjectName(services, schema),
 			]);
 			const effectiveLang = userLang ?? defaultLang;
 			const templatesPath =
@@ -35,7 +36,14 @@ const hook: HookConfig = ({ filter }, { services, logger, getSchema, env }) => {
 			if (!trans) return input;
 
 			const fromEnv = typeof env['EMAIL_FROM'] === 'string' ? env['EMAIL_FROM'] : '';
-			applyTranslationsToEmail(input, trans, fromEnv);
+			const envFromName =
+				typeof env['I18N_EMAIL_FALLBACK_FROM_NAME'] === 'string'
+					? env['I18N_EMAIL_FALLBACK_FROM_NAME']
+					: undefined;
+			const effectiveTrans = trans.from_name
+				? trans
+				: { ...trans, from_name: envFromName ?? projectName ?? undefined };
+			applyTranslationsToEmail(input, effectiveTrans, fromEnv);
 		} catch (err) {
 			logger.error('Failed to apply email i18n translations:', err);
 		}

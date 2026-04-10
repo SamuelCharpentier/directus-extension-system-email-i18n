@@ -3,13 +3,15 @@ import type { TemplateTrans } from './types';
 
 const EMAIL_ADDRESS_PATTERN = /<([^>]+)>$/;
 
-export function extractRecipientEmail(to: EmailOptions['to']): string {
+export function extractRecipientEmail(to: EmailOptions['to']): string | null {
 	if (typeof to === 'string') return to;
 	if (Array.isArray(to)) {
 		const first = to[0];
-		return typeof first === 'string' ? first : ((first as any)?.address ?? '');
+		const address = typeof first === 'string' ? first : ((first as any)?.address ?? null);
+		return address || null;
 	}
-	return (to as any)?.address ?? '';
+	const address = (to as any)?.address ?? null;
+	return address || null;
 }
 
 function extractAddressFromEnv(emailFrom: string): string {
@@ -38,8 +40,7 @@ export function applyTranslationsToEmail(
 	if (email.template) {
 		const i18n = Object.fromEntries(
 			Object.entries(trans)
-				.filter(([key]) => key !== 'subject' && key !== 'from_name')
-				.map(([key, value]) => [key, value ?? '']),
+				.filter(([key, value]) => key !== 'subject' && key !== 'from_name' && typeof value === 'string'),
 		);
 		email.template.data = { ...email.template.data, i18n };
 	}

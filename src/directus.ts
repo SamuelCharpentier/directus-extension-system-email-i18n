@@ -12,8 +12,8 @@ export async function fetchDefaultLang(
 	const lang = result['default_language'];
 	const [primary] = typeof lang === 'string' ? lang.split('-') : [];
 	const envFallback =
-		typeof env['I18N_FALLBACK_LANG'] === 'string'
-			? env['I18N_FALLBACK_LANG']
+		typeof env['I18N_EMAIL_FALLBACK_LANG'] === 'string'
+			? env['I18N_EMAIL_FALLBACK_LANG']
 			: HARDCODED_FALLBACK_LANG;
 	return primary ?? envFallback;
 }
@@ -32,4 +32,14 @@ export async function fetchUserLang(
 	const lang = results[0]?.['language'];
 	const [primary] = typeof lang === 'string' ? lang.split('-') : [];
 	return primary ?? null;
+}
+
+export async function fetchProjectName(
+	services: ExtensionsServices,
+	schema: SchemaOverview,
+): Promise<string | null> {
+	const settings = new services.SettingsService({ schema, accountability: null });
+	const result = await settings.readSingleton({ fields: ['project_name'] });
+	const name = result['project_name'];
+	return typeof name === 'string' && name.length > 0 ? name : null;
 }
