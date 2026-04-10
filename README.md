@@ -12,21 +12,9 @@ This extension translates system emails (password reset, user invitation, user r
 
 Check the [official Directus guide](https://docs.directus.io/extensions/installing-extensions.html) for all options.
 
-### A. Directus Marketplace
+### Extensions Directory
 
-Search for `System Email` and install "System Email I18n" with one click.
-
-> To see non-sandboxed extensions in the marketplace, you need to enable them in your [config options](https://docs.directus.io/self-hosted/config-options.html#marketplace).
-
-### B. npm Registry
-
-```sh
-npm install directus-extension-system-email-i18n
-```
-
-Include the installed package in your Docker build flow.
-
-### C. Extensions Directory
+Clone this repository and build the extension:
 
 ```sh
 npm ci && npm run build
@@ -44,11 +32,10 @@ Upload the output to your Directus extensions directory.
 
 The extension is a **hook** that intercepts all outgoing emails via the `email.send` filter. For each of the three supported system email types it:
 
-1. Looks up the **recipient's language** from their Directus user profile.
-2. Determines the **default language** from `directus_settings.default_language`.
-3. Tries to load `<EMAIL_TEMPLATES_PATH>/locales/<user-lang>.json`, falling back to the default-lang file, then giving up (email is sent untouched).
-4. Extracts the translation keys for the relevant email type from the locale file.
-5. Injects them into the email as `subject`, `from` (sender name), and `template.data.i18n.*` variables available in the Liquid template.
+1. Looks up the **recipient's language** from their Directus user profile if available. Determines the **default language** from `directus_settings.default_language` otherwise.
+2. Tries to load `<EMAIL_TEMPLATES_PATH>/locales/<user-lang>.json`, falling back to the default-lang file, then giving up (email is sent untouched).
+3. Extracts the translation keys for the relevant email type from the locale file.
+4. Injects them into the email as `subject`, `from` (sender name), and `template.data.i18n.*` variables available in the Liquid template.
 
 Translation is **always applied** regardless of whether the user's language matches the system default.
 
@@ -60,11 +47,11 @@ Translation is **always applied** regardless of whether the user's language matc
 
 ## Environment Variables
 
-| Variable               | Required | Default | Description                                                                                                  |
-| ---------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------ |
-| `EMAIL_TEMPLATES_PATH` | Yes      | —       | Absolute path to the directory containing your `.liquid` templates and `locales/` folder                     |
-| `EMAIL_FROM`           | Yes      | `""`    | Sender email address, e.g. `noreply@example.com`. Used when building the `from` field with a translated name |
-| `I18N_FALLBACK_LANG`   | No       | `en`    | Language code to use when `directus_settings.default_language` is `null`                                     |
+Make sure to set `EMAIL_TEMPLATES_PATH` and `EMAIL_FROM` accordingly with Directus documentation on [email configuration](https://docs.directus.io/configuration/email.html#configuration-options). `I18N_FALLBACK_LANG` is optional and only used if `default_language` is `null`.
+
+| Variable             | Required | Default | Description                                                              |
+| -------------------- | -------- | ------- | ------------------------------------------------------------------------ |
+| `I18N_FALLBACK_LANG` | No       | `en`    | Language code to use when `directus_settings.default_language` is `null` |
 
 <br />
 
