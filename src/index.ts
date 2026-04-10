@@ -54,6 +54,15 @@ const hook: HookConfig = ({ filter }, { services, logger, getSchema, env }) => {
 				? trans
 				: { ...trans, from_name: envFromName ?? projectName ?? undefined };
 			applyTranslationsToEmail(input, effectiveTrans, fromEnv);
+
+			const baseTrans = extractTemplateTrans(locale, 'base');
+			if (baseTrans && input.template) {
+				const baseI18n = Object.fromEntries(
+					Object.entries(baseTrans).filter(([_, v]) => typeof v === 'string'),
+				);
+				const existing = (input.template.data?.['i18n'] as Record<string, unknown>) ?? {};
+				input.template.data = { ...input.template.data, i18n: { ...existing, base: baseI18n } };
+			}
 		} catch (err) {
 			logger.error('Failed to apply email i18n translations:', err);
 		}

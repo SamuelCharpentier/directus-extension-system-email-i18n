@@ -1,22 +1,28 @@
 {
-  "from_name": "Sympo de Thetford",
-  "password-reset": {
-    "subject": "Demande de réinitialisation du mot de passe",
-    "heading": "Réinitialiser votre mot de passe",
-    "body": "Nous avons reçu une demande de réinitialisation du mot de passe pour votre compte <i>{{ projectName }}</i>. Si vous n'êtes pas à l'origine de cette demande, veuillez contacter un administrateur.",
-    "cta": "Réinitialiser mon mot de passe",
-    "expiry_notice": "Important : Ce lien expirera dans 24 heures."
-  },
-  "user-invitation": {
-    "subject": "Vous avez été invité(e)",
-    "heading": "Vous avez été invité(e) à rejoindre {{ projectName }}",
-    "body": "Vous avez été invité(e) à rejoindre <i>{{ projectName }}</i>. Cliquez sur le bouton ci-dessous pour accepter cette invitation.",
-    "cta": "Accepter l'invitation"
-  },
-  "user-registration": {
-    "subject": "Vérifiez votre adresse courriel",
-    "heading": "Vérifiez votre adresse courriel",
-    "body": "Merci de vous être inscrit(e) sur <i>{{ projectName }}</i>. Pour compléter votre inscription, veuillez vérifier votre adresse courriel en cliquant sur le lien ci-dessous.",
-    "cta": "Vérifier mon courriel"
-  }
+	"from_name": "Votre organisation",
+	"base": {
+		"footer_note": "Si ce message ne vous concerne pas, vous pouvez l'ignorer ou nous contacter.",
+		"org_name": "Votre organisation",
+		"org_address": "123, rue Exemple, Ville, Pays",
+		"org_url": "exemple.com"
+	},
+	"password-reset": {
+		"subject": "Demande de réinitialisation du mot de passe",
+		"heading": "Réinitialiser votre mot de passe",
+		"body": "Nous avons reçu une demande de réinitialisation du mot de passe pour votre compte <i>{{ projectName }}</i>. Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer ce message.",
+		"cta": "Réinitialiser mon mot de passe",
+		"expiry_notice": "Important : Ce lien expirera dans 24 heures."
+	},
+	"user-invitation": {
+		"subject": "Vous avez été invité(e)",
+		"heading": "Vous avez été invité(e) à rejoindre {{ projectName }}",
+		"body": "Vous avez été invité(e) à rejoindre <i>{{ projectName }}</i>. Cliquez sur le bouton ci-dessous pour accepter cette invitation.",
+		"cta": "Accepter l'invitation"
+	},
+	"user-registration": {
+		"subject": "Vérifiez votre adresse courriel",
+		"heading": "Vérifiez votre adresse courriel",
+		"body": "Merci de vous être inscrit(e) sur <i>{{ projectName }}</i>. Pour compléter votre inscription, veuillez vérifier votre adresse courriel en cliquant sur le lien ci-dessous.",
+		"cta": "Vérifier mon courriel"
+	}
 }
