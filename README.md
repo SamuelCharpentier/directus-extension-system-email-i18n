@@ -174,6 +174,24 @@ The locale file for the user's language is tried first. If it doesn't exist, the
 
 <br />
 
+## Notes
+
+### UI strings are separate from email translations
+
+This extension only translates **email content**. Directus admin UI strings (shown in the browser after an action, e.g. the password reset confirmation message) are handled by Directus's own frontend i18n system and are not affected by this extension.
+
+If a UI string appears in the wrong language, override it via **Settings → Translations** in the Directus admin panel. Known keys:
+
+| Situation                             | Translation key          |
+| ------------------------------------- | ------------------------ |
+| Password reset confirmation (login page) | `password_reset_sent` |
+
+<br />
+
+---
+
+<br />
+
 ## Contributing
 
 Anyone is welcome to contribute, but mind the [guidelines](.github/CONTRIBUTING.md):
