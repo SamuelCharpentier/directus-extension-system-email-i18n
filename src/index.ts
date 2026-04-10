@@ -1,85 +1,47 @@
-import { defineHook } from '@directus/extensions-sdk';
-import type { Accountability, EmailOptions } from '@directus/types';
+import type { EmailOptions, HookConfig } from '@directus/types';
+import { fetchDefaultLang, fetchUserLang } from './directus';
+import { applyTranslationsToEmail, extractRecipientEmail } from './email';
+import { extractTemplateTrans, resolveLocale } from './locale';
 
-interface I18nSubjects {
-	[key: string]: {
-		[key: string]: string;
-	};
+const SYSTEM_EMAIL_TEMPLATES = ['password-reset', 'user-invitation', 'user-registration'] as const;
+
+function isSystemTemplate(name: string): name is (typeof SYSTEM_EMAIL_TEMPLATES)[number] {
+	return (SYSTEM_EMAIL_TEMPLATES as readonly string[]).includes(name);
 }
 
-export default defineHook(({ filter }, { services, logger, getSchema, env }) => {
-	const { ItemsService } = services;
-
+const hook: HookConfig = ({ filter }, { services, logger, getSchema, env }) => {
 	filter('email.send', async (input: EmailOptions) => {
-		
-		if (!input.template) {
+		if (!input.template || !isSystemTemplate(input.template.name)) {
 			return input;
 		}
 
-		const templateName = input.template.name;
+		try {
+			const schema = await getSchema();
+			const recipientEmail = extractRecipientEmail(input.to);
 
-		if (['password-reset', 'user-invitation', 'user-registration'].includes(templateName)) {	
-			try {
-				 // pull in any subject translation form the environment variable I18N_EMAIL_SUBJECTS (scheme: {"de": {"password-reset": "Passwort zurücksetzen", ...}, ...})
-				// TODO: Could also become a setting somewhere in the Directus app as an alternative to the environment variable
-				let i18nEmailSubjects: I18nSubjects = {};
-				try {
-					i18nEmailSubjects = typeof env.I18N_EMAIL_SUBJECTS === 'object' 
-						? env.I18N_EMAIL_SUBJECTS 
-						: JSON.parse(env.I18N_EMAIL_SUBJECTS || '{}');
-				} catch (err) {
-					logger.error('Failed to parse I18N_EMAIL_SUBJECTS:', err);
-				}
+			const [defaultLang, userLang] = await Promise.all([
+				fetchDefaultLang(services, schema, env),
+				fetchUserLang(recipientEmail, services, schema),
+			]);
+			const effectiveLang = userLang ?? defaultLang;
+			const templatesPath =
+				typeof env['EMAIL_TEMPLATES_PATH'] === 'string' ? env['EMAIL_TEMPLATES_PATH'] : '';
+			const locale = await resolveLocale(templatesPath, effectiveLang, defaultLang);
 
-				// preparing the accountability object to be able searching directus users with admin rights
-				// this includes a lot of empty props, which is necessary to match the type of the accountability object
-				const adminAccountability: Accountability = {
-					role: null,
-					roles: [],
-					user: null,
-					admin: true,
-					app: false,
-					ip: null,
-					origin: 'user language lookup by extension'
-				};
+			if (!locale) return input;
 
-				// get the default language
-				try {
-					const settings = new ItemsService('directus_settings', { 
-						schema: await getSchema(), 
-						accountability: adminAccountability 
-					});
-					const settingsResponse = await settings.readSingleton({
-						fields: ['default_language'],
-					});
-					const defaultLang = settingsResponse?.default_language?.split('-')[0] || 'en';
-					// get the language from searching and reading the user
-					const users = new ItemsService('directus_users', { schema: await getSchema(), accountability: adminAccountability }); 
-					const toEmail = typeof input.to === 'string' ? input.to : (input.to as any)?.address || '';
-					const response = await users.readByQuery({
-						filter: {
-							email: {
-								_eq: toEmail
-							}
-						},
-						fields: ['language'],
-						limit: 1
-					});
-					const lang = response[0]?.language?.split('-')[0] ? response[0].language.split('-')[0] : defaultLang;
+			const trans = extractTemplateTrans(locale, input.template.name);
 
-					// override the subject with the translation from the environment variable (if available)
-					input.subject = i18nEmailSubjects[lang] && i18nEmailSubjects[lang][templateName] ? i18nEmailSubjects[lang][templateName] : input.subject;
-					// override template for non-default languages
-					if (lang !== defaultLang) {
-						input.template.name = templateName + '-' + lang;
-					}
-				} catch (err) {
-					logger.error('Failed to fetch settings:', err);
-				}
-			} catch (err) {
-				logger.error('Error in email.send filter:', err);
-			}
+			if (!trans) return input;
+
+			const fromEnv = typeof env['EMAIL_FROM'] === 'string' ? env['EMAIL_FROM'] : '';
+			applyTranslationsToEmail(input, trans, fromEnv);
+		} catch (err) {
+			logger.error('Failed to apply email i18n translations:', err);
 		}
+
 		return input;
 	});
-});
+};
+
+export default hook;
