@@ -1,284 +1,455 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { EmailOptions } from '@directus/types';
 
-vi.mock('../src/directus', () => ({
-	fetchDefaultLang: vi.fn(),
-	fetchUserLang: vi.fn(),
-	fetchProjectName: vi.fn(),
+const fsMocks = vi.hoisted(() => ({
+	writeFile: vi.fn().mockResolvedValue(undefined),
+	rename: vi.fn().mockResolvedValue(undefined),
+	mkdir: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock('../src/email', () => ({
-	extractRecipientEmail: vi.fn(),
-	applyTranslationsToEmail: vi.fn(),
-}));
-vi.mock('../src/locale', () => ({
-	resolveLocale: vi.fn(),
-	extractTemplateTrans: vi.fn(),
-}));
+vi.mock('node:fs/promises', () => fsMocks);
 
+import { emptySchema, makeLogger, makeServices } from './helpers';
+import { __INTERNAL__ } from '../src/bootstrap';
 import hook from '../src/index';
-import { fetchDefaultLang, fetchProjectName, fetchUserLang } from '../src/directus';
-import { extractRecipientEmail, applyTranslationsToEmail } from '../src/email';
-import { resolveLocale, extractTemplateTrans } from '../src/locale';
 
-const mockFetchDefaultLang = vi.mocked(fetchDefaultLang);
-const mockFetchUserLang = vi.mocked(fetchUserLang);
-const mockFetchProjectName = vi.mocked(fetchProjectName);
-const mockExtractRecipientEmail = vi.mocked(extractRecipientEmail);
-const mockApplyTranslations = vi.mocked(applyTranslationsToEmail);
-const mockResolveLocale = vi.mocked(resolveLocale);
-const mockExtractTemplateTrans = vi.mocked(extractTemplateTrans);
+type HookRegistry = {
+	filters: Record<string, (payload: any, meta?: any) => Promise<any> | any>;
+	actions: Record<string, (meta: any) => Promise<any> | any>;
+};
 
-function makeEmail(templateName: string): EmailOptions {
-	return {
-		to: 'user@example.com',
-		template: { name: templateName, data: {} },
-	} as EmailOptions;
-}
-
-function setupHook() {
-	let filterCallback: ((input: EmailOptions) => Promise<EmailOptions>) | undefined;
-	const filter = vi.fn((_event: string, cb: typeof filterCallback) => {
-		filterCallback = cb;
-	});
-	const logger = { error: vi.fn(), info: vi.fn(), warn: vi.fn() };
-	const getSchema = vi.fn().mockResolvedValue({});
-	const env = { EMAIL_TEMPLATES_PATH: '/templates', EMAIL_FROM: 'noreply@example.com' };
-
-	hook({ filter } as any, { services: {} as any, logger, getSchema, env } as any);
-
-	return { invoke: filterCallback!, logger, getSchema, env };
+function register(args: {
+	services: any;
+	getSchema?: () => Promise<any>;
+	env?: Record<string, unknown>;
+}): { logger: ReturnType<typeof makeLogger>; reg: HookRegistry } {
+	const reg: HookRegistry = { filters: {}, actions: {} };
+	const logger = makeLogger();
+	hook(
+		{
+			filter: ((name: string, fn: any) => {
+				reg.filters[name] = fn;
+			}) as any,
+			action: ((name: string, fn: any) => {
+				reg.actions[name] = fn;
+			}) as any,
+			init: (() => {}) as any,
+			schedule: (() => {}) as any,
+			embed: (() => {}) as any,
+		},
+		{
+			services: args.services,
+			logger: logger as any,
+			getSchema: args.getSchema ?? vi.fn().mockResolvedValue(emptySchema),
+			env: args.env ?? {},
+			database: {} as any,
+			emitter: {} as any,
+		} as any,
+	);
+	return { logger, reg };
 }
 
 beforeEach(() => {
-	vi.clearAllMocks();
-	mockFetchDefaultLang.mockResolvedValue('en');
-	mockFetchUserLang.mockResolvedValue(null);
-	mockFetchProjectName.mockResolvedValue('My Project');
-	mockExtractRecipientEmail.mockReturnValue('user@example.com');
-	mockResolveLocale.mockResolvedValue(null);
-	mockExtractTemplateTrans.mockReturnValue(null);
+	__INTERNAL__.reset();
+	fsMocks.writeFile.mockClear();
+	fsMocks.rename.mockClear();
 });
 
-describe('hook filter registration', () => {
-	it('registers a filter for email.send', () => {
-		const filter = vi.fn();
-		hook(
-			{ filter } as any,
-			{
-				services: {} as any,
-				logger: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
-				getSchema: vi.fn(),
-				env: {},
-			} as any,
+describe('hook registration', () => {
+	it('registers every expected filter and action', () => {
+		const { services } = makeServices();
+		const { reg } = register({ services });
+		expect(Object.keys(reg.filters).sort()).toEqual(
+			[
+				'email.send',
+				'email_templates.items.create',
+				'email_templates.items.update',
+				'email_templates.items.delete',
+				'email_template_variables.items.delete',
+			].sort(),
 		);
-		expect(filter).toHaveBeenCalledWith('email.send', expect.any(Function));
+		expect(Object.keys(reg.actions).sort()).toEqual(
+			['server.start', 'email_templates.items.create', 'email_templates.items.update'].sort(),
+		);
+	});
+});
+
+describe('server.start action', () => {
+	it('runs bootstrap with EMAIL_TEMPLATES_PATH from env', async () => {
+		const { services, collectionsInstance } = makeServices({
+			collections: {
+				readOne: vi.fn().mockResolvedValue({ collection: 'x' }),
+				createOne: vi.fn(),
+			},
+		});
+		const { reg } = register({
+			services,
+			env: { EMAIL_TEMPLATES_PATH: '/tmp/tpl' },
+		});
+		await reg.actions['server.start']!({});
+		expect(collectionsInstance.readOne).toHaveBeenCalled();
+	});
+
+	it('falls back to empty path when env is absent', async () => {
+		const { services } = makeServices({
+			collections: {
+				readOne: vi.fn().mockResolvedValue({ collection: 'x' }),
+				createOne: vi.fn(),
+			},
+		});
+		const { reg } = register({ services });
+		await reg.actions['server.start']!({});
+		// No write should happen without a path
+		expect(fsMocks.writeFile).not.toHaveBeenCalled();
 	});
 });
 
 describe('email.send filter', () => {
-	it('returns input unchanged for non-system templates', async () => {
-		const { invoke } = setupHook();
-		const input = makeEmail('custom-template');
-		const result = await invoke(input);
-		expect(result).toBe(input);
-		expect(mockFetchDefaultLang).not.toHaveBeenCalled();
+	it('delegates to runSendFilter and passes through when there is no template', async () => {
+		const { services } = makeServices();
+		const { reg } = register({ services });
+		const input = { to: 'a@b.com', subject: 'x' };
+		const out = await reg.filters['email.send']!(input);
+		expect(out).toBe(input);
 	});
+});
 
-	it('returns input unchanged when template is missing', async () => {
-		const { invoke } = setupHook();
-		const input = { to: 'user@example.com' } as EmailOptions;
-		const result = await invoke(input);
-		expect(result).toBe(input);
-		expect(mockFetchDefaultLang).not.toHaveBeenCalled();
-	});
-
-	it('processes all three system email templates', async () => {
-		const { invoke } = setupHook();
-		for (const name of ['password-reset', 'user-invitation', 'user-registration']) {
-			vi.clearAllMocks();
-			mockFetchDefaultLang.mockResolvedValue('en');
-			mockFetchUserLang.mockResolvedValue(null);
-			mockFetchProjectName.mockResolvedValue(null);
-			mockExtractRecipientEmail.mockReturnValue('user@example.com');
-			mockResolveLocale.mockResolvedValue(null);
-			await invoke(makeEmail(name));
-			expect(mockFetchDefaultLang).toHaveBeenCalledOnce();
-		}
-	});
-
-	it('skips fetchUserLang and uses defaultLang when recipient email cannot be extracted', async () => {
-		const { invoke } = setupHook();
-		mockExtractRecipientEmail.mockReturnValue(null as any);
-		mockFetchDefaultLang.mockResolvedValue('en');
-		mockResolveLocale.mockResolvedValue(null);
-		await invoke(makeEmail('password-reset'));
-		expect(mockFetchUserLang).not.toHaveBeenCalled();
-		expect(mockResolveLocale).toHaveBeenCalledWith('/templates', 'en', 'en');
-	});
-
-	it('returns input unchanged when no locale is found', async () => {
-		const { invoke } = setupHook();
-		mockResolveLocale.mockResolvedValue(null);
-		const input = makeEmail('password-reset');
-		const result = await invoke(input);
-		expect(result).toBe(input);
-		expect(mockApplyTranslations).not.toHaveBeenCalled();
-	});
-
-	it('returns input unchanged when no template trans is found', async () => {
-		const { invoke } = setupHook();
-		mockResolveLocale.mockResolvedValue({ from_name: 'Test' });
-		mockExtractTemplateTrans.mockReturnValue(null);
-		const input = makeEmail('password-reset');
-		const result = await invoke(input);
-		expect(result).toBe(input);
-		expect(mockApplyTranslations).not.toHaveBeenCalled();
-	});
-
-	it('applies translations when locale and trans are available', async () => {
-		const { invoke } = setupHook();
-		const locale = { 'password-reset': { subject: 'Reset', from_name: 'Sender' } };
-		const trans = { subject: 'Reset', from_name: 'Sender' };
-		mockResolveLocale.mockResolvedValue(locale);
-		mockExtractTemplateTrans.mockReturnValue(trans);
-		const input = makeEmail('password-reset');
-		await invoke(input);
-		expect(mockApplyTranslations).toHaveBeenCalledWith(input, trans, 'noreply@example.com');
-	});
-
-	it('uses I18N_EMAIL_FALLBACK_FROM_NAME env variable when trans has no from_name', async () => {
-		let cb: ((input: EmailOptions) => Promise<EmailOptions>) | undefined;
-		const filter2 = vi.fn((_e: string, c: typeof cb) => {
-			cb = c;
+describe('template items.create action (post-write sync)', () => {
+	it('rebuilds the locale file for the created language', async () => {
+		const { services } = makeServices({
+			items: {
+				email_templates: {
+					readByQuery: vi
+						.fn()
+						.mockResolvedValue([
+							{ template_key: 'x', language: 'fr', strings: { a: 'b' } },
+						]),
+				},
+			},
 		});
-		hook(
-			{ filter: filter2 } as any,
-			{
-				services: {} as any,
-				logger: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
-				getSchema: vi.fn().mockResolvedValue({}),
-				env: { EMAIL_FROM: 'a@b.com', I18N_EMAIL_FALLBACK_FROM_NAME: 'Env Name' },
-			} as any,
-		);
-		const trans = { subject: 'S' };
-		mockResolveLocale.mockResolvedValue({ 'password-reset': trans });
-		mockExtractTemplateTrans.mockReturnValue(trans);
-		mockExtractRecipientEmail.mockReturnValue('u@example.com');
-		await cb!(makeEmail('password-reset'));
-		expect(mockApplyTranslations).toHaveBeenCalledWith(
-			expect.anything(),
-			{ ...trans, from_name: 'Env Name' },
-			'a@b.com',
-		);
-	});
-
-	it('falls back to project name when trans and env have no from_name', async () => {
-		const { invoke } = setupHook();
-		mockFetchProjectName.mockResolvedValue('Project Name');
-		const trans = { subject: 'S' };
-		mockResolveLocale.mockResolvedValue({ 'password-reset': trans });
-		mockExtractTemplateTrans.mockReturnValue(trans);
-		await invoke(makeEmail('password-reset'));
-		expect(mockApplyTranslations).toHaveBeenCalledWith(
-			expect.anything(),
-			{ ...trans, from_name: 'Project Name' },
-			'noreply@example.com',
-		);
-	});
-
-	it('passes trans unchanged when from_name is already set', async () => {
-		const { invoke } = setupHook();
-		const trans = { subject: 'S', from_name: 'From Locale' };
-		mockResolveLocale.mockResolvedValue({ 'password-reset': trans });
-		mockExtractTemplateTrans.mockReturnValue(trans);
-		await invoke(makeEmail('password-reset'));
-		expect(mockApplyTranslations).toHaveBeenCalledWith(
-			expect.anything(),
-			trans,
-			'noreply@example.com',
-		);
-	});
-
-	it('sets from_name to undefined when neither env nor project name are available', async () => {
-		const { invoke } = setupHook();
-		mockFetchProjectName.mockResolvedValue(null);
-		const trans = { subject: 'S' };
-		mockResolveLocale.mockResolvedValue({ 'password-reset': trans });
-		mockExtractTemplateTrans.mockReturnValue(trans);
-		await invoke(makeEmail('password-reset'));
-		expect(mockApplyTranslations).toHaveBeenCalledWith(
-			expect.anything(),
-			{ ...trans, from_name: undefined },
-			'noreply@example.com',
-		);
-	});
-
-	it('uses userLang when available instead of defaultLang', async () => {
-		const { invoke } = setupHook();
-		mockFetchUserLang.mockResolvedValue('fr');
-		mockFetchDefaultLang.mockResolvedValue('en');
-		await invoke(makeEmail('password-reset'));
-		expect(mockResolveLocale).toHaveBeenCalledWith('/templates', 'fr', 'en');
-	});
-
-	it('falls back to defaultLang when userLang is null', async () => {
-		const { invoke } = setupHook();
-		mockFetchUserLang.mockResolvedValue(null);
-		mockFetchDefaultLang.mockResolvedValue('en');
-		await invoke(makeEmail('password-reset'));
-		expect(mockResolveLocale).toHaveBeenCalledWith('/templates', 'en', 'en');
-	});
-
-	it('fetches langs and project name in parallel', async () => {
-		const { invoke } = setupHook();
-		const order: string[] = [];
-		mockFetchDefaultLang.mockImplementation(async () => {
-			order.push('default');
-			return 'en';
+		const { reg } = register({ services, env: { EMAIL_TEMPLATES_PATH: '/tmp/tpl' } });
+		await reg.actions['email_templates.items.create']!({
+			payload: { language: 'fr' },
 		});
-		mockFetchUserLang.mockImplementation(async () => {
-			order.push('user');
-			return null;
-		});
-		mockFetchProjectName.mockImplementation(async () => {
-			order.push('project');
-			return null;
-		});
-		await invoke(makeEmail('password-reset'));
-		expect(order).toContain('default');
-		expect(order).toContain('user');
-		expect(order).toContain('project');
+		expect(fsMocks.writeFile).toHaveBeenCalled();
 	});
 
-	it('logs error and returns input when an exception is thrown', async () => {
-		const { invoke, logger } = setupHook();
-		mockFetchDefaultLang.mockRejectedValue(new Error('db error'));
-		const input = makeEmail('password-reset');
-		const result = await invoke(input);
-		expect(result).toBe(input);
-		expect(logger.error).toHaveBeenCalledWith(
-			'Failed to apply email i18n translations:',
-			expect.any(Error),
+	it('is a no-op when no language is on the payload', async () => {
+		const { services } = makeServices();
+		const { reg } = register({ services, env: { EMAIL_TEMPLATES_PATH: '/tmp/tpl' } });
+		await reg.actions['email_templates.items.create']!({ payload: {} });
+		expect(fsMocks.writeFile).not.toHaveBeenCalled();
+	});
+
+	it('is a no-op when meta has no payload object at all', async () => {
+		const { services } = makeServices();
+		const { reg } = register({ services, env: { EMAIL_TEMPLATES_PATH: '/tmp/tpl' } });
+		await reg.actions['email_templates.items.create']!({});
+		expect(fsMocks.writeFile).not.toHaveBeenCalled();
+	});
+
+	it('logs an error when post-write sync fails', async () => {
+		fsMocks.writeFile.mockRejectedValueOnce(new Error('disk full'));
+		const { services } = makeServices({
+			items: {
+				email_templates: {
+					readByQuery: vi
+						.fn()
+						.mockResolvedValue([{ template_key: 'x', language: 'fr', strings: {} }]),
+				},
+			},
+		});
+		const { logger, reg } = register({
+			services,
+			env: { EMAIL_TEMPLATES_PATH: '/tmp/tpl' },
+		});
+		await reg.actions['email_templates.items.create']!({ payload: { language: 'fr' } });
+		expect(logger.error).toHaveBeenCalled();
+	});
+});
+
+describe('template items.update action (post-write sync)', () => {
+	it('is a no-op when keys is empty', async () => {
+		const { services } = makeServices();
+		const { reg } = register({ services });
+		await reg.actions['email_templates.items.update']!({ keys: [] });
+		expect(fsMocks.writeFile).not.toHaveBeenCalled();
+	});
+
+	it('is a no-op when meta has no keys field', async () => {
+		const { services } = makeServices();
+		const { reg } = register({ services });
+		await reg.actions['email_templates.items.update']!({});
+		expect(fsMocks.writeFile).not.toHaveBeenCalled();
+	});
+
+	it('resyncs every affected language', async () => {
+		const rows = [
+			{ template_key: 'a', language: 'fr', strings: {} },
+			{ template_key: 'b', language: 'en', strings: {} },
+		];
+		const { services } = makeServices({
+			items: {
+				email_templates: {
+					readMany: vi.fn().mockResolvedValue(rows),
+					readByQuery: vi.fn().mockResolvedValue(rows),
+				},
+			},
+		});
+		const { reg } = register({
+			services,
+			env: { EMAIL_TEMPLATES_PATH: '/tmp/tpl' },
+		});
+		await reg.actions['email_templates.items.update']!({ keys: ['1', '2'] });
+		// Once per unique language (2)
+		expect(fsMocks.writeFile).toHaveBeenCalledTimes(2);
+	});
+
+	it('logs when update resync throws', async () => {
+		const { services } = makeServices({
+			items: {
+				email_templates: {
+					readMany: vi.fn().mockRejectedValue(new Error('boom')),
+				},
+			},
+		});
+		const { logger, reg } = register({
+			services,
+			env: { EMAIL_TEMPLATES_PATH: '/tmp/tpl' },
+		});
+		await reg.actions['email_templates.items.update']!({ keys: ['1'] });
+		expect(logger.error).toHaveBeenCalled();
+	});
+});
+
+describe('template items.create filter (checksum)', () => {
+	it('writes a checksum into the payload', async () => {
+		const { services } = makeServices();
+		const { reg } = register({ services });
+		const out = await reg.filters['email_templates.items.create']!({
+			template_key: 'x',
+			language: 'en',
+			subject: 'S',
+			from_name: null,
+			strings: { a: 'b' },
+		});
+		expect(out.checksum).toMatch(/^[a-f0-9]{64}$/);
+	});
+
+	it('tolerates missing subject / from_name / strings by defaulting them', async () => {
+		const { services } = makeServices();
+		const { reg } = register({ services });
+		const out = await reg.filters['email_templates.items.create']!({ template_key: 'x' });
+		expect(out.checksum).toMatch(/^[a-f0-9]{64}$/);
+	});
+});
+
+describe('template items.update filter (checksum)', () => {
+	it('skips recompute when the patch does not touch checksummed fields', async () => {
+		const { services } = makeServices();
+		const { reg } = register({ services });
+		const patch = { description: 'x' } as any;
+		const out = await reg.filters['email_templates.items.update']!(patch, { keys: ['1'] });
+		expect(out.checksum).toBeUndefined();
+	});
+
+	it('skips recompute when a bulk update is performed', async () => {
+		const { services } = makeServices();
+		const { reg } = register({ services });
+		const out = await reg.filters['email_templates.items.update']!(
+			{ subject: 'new' },
+			{ keys: ['1', '2'] },
+		);
+		expect(out.checksum).toBeUndefined();
+	});
+
+	it('recomputes using existing row fields for any missing keys', async () => {
+		const existing = {
+			subject: 'old',
+			from_name: 'org',
+			strings: { a: '1' },
+		};
+		const { services } = makeServices({
+			items: {
+				email_templates: { readOne: vi.fn().mockResolvedValue(existing) },
+			},
+		});
+		const { reg } = register({ services });
+		const out = await reg.filters['email_templates.items.update']!(
+			{ subject: 'new' },
+			{ keys: ['1'] },
+		);
+		expect(out.checksum).toMatch(/^[a-f0-9]{64}$/);
+	});
+
+	it('recomputes when only from_name is patched', async () => {
+		const { services } = makeServices({
+			items: {
+				email_templates: {
+					readOne: vi.fn().mockResolvedValue({
+						subject: 's',
+						from_name: 'o',
+						strings: {},
+					}),
+				},
+			},
+		});
+		const { reg } = register({ services });
+		const out = await reg.filters['email_templates.items.update']!(
+			{ from_name: 'x' },
+			{ keys: ['1'] },
+		);
+		expect(out.checksum).toMatch(/^[a-f0-9]{64}$/);
+	});
+
+	it('recomputes with null existing strings when patch omits strings', async () => {
+		const { services } = makeServices({
+			items: {
+				email_templates: {
+					readOne: vi.fn().mockResolvedValue({
+						subject: 's',
+						from_name: 'o',
+						strings: null,
+					}),
+				},
+			},
+		});
+		const { reg } = register({ services });
+		const out = await reg.filters['email_templates.items.update']!(
+			{ from_name: 'x' },
+			{ keys: ['1'] },
+		);
+		expect(out.checksum).toMatch(/^[a-f0-9]{64}$/);
+	});
+
+	it('recomputes when only strings is patched, even with null existing', async () => {
+		const { services } = makeServices({
+			items: {
+				email_templates: {
+					readOne: vi.fn().mockResolvedValue({
+						subject: null,
+						from_name: null,
+						strings: null,
+					}),
+				},
+			},
+		});
+		const { reg } = register({ services });
+		const out = await reg.filters['email_templates.items.update']!(
+			{ strings: { a: 'b' } },
+			{ keys: ['1'] },
+		);
+		expect(out.checksum).toMatch(/^[a-f0-9]{64}$/);
+	});
+
+	it('skips recompute when meta has no keys at all', async () => {
+		const { services } = makeServices();
+		const { reg } = register({ services });
+		const out = await reg.filters['email_templates.items.update']!({ subject: 'new' }, {});
+		expect(out.checksum).toBeUndefined();
+	});
+
+	it('warns but returns the patch untouched when checksum recompute throws', async () => {
+		const { services } = makeServices({
+			items: {
+				email_templates: { readOne: vi.fn().mockRejectedValue(new Error('no row')) },
+			},
+		});
+		const { logger, reg } = register({ services });
+		const out = await reg.filters['email_templates.items.update']!(
+			{ subject: 'new' },
+			{ keys: ['1'] },
+		);
+		expect(out).toEqual({ subject: 'new' });
+		expect(logger.warn).toHaveBeenCalled();
+	});
+});
+
+describe('template items.delete filter (protected guard)', () => {
+	it('passes through an empty payload', async () => {
+		const { services } = makeServices();
+		const { reg } = register({ services });
+		await reg.filters['email_templates.items.delete']!([]);
+	});
+
+	it('passes through an undefined payload', async () => {
+		const { services } = makeServices();
+		const { reg } = register({ services });
+		await reg.filters['email_templates.items.delete']!(undefined);
+	});
+
+	it('throws when any row is protected', async () => {
+		const { services } = makeServices({
+			items: {
+				email_templates: {
+					readMany: vi.fn().mockResolvedValue([
+						{ template_key: 'x', is_protected: false },
+						{ template_key: 'base', is_protected: true },
+					]),
+				},
+			},
+		});
+		const { reg } = register({ services });
+		await expect(reg.filters['email_templates.items.delete']!(['1', '2'])).rejects.toThrow(
+			/protected template/i,
 		);
 	});
 
-	it('uses empty string for EMAIL_FROM when env var is missing', async () => {
-		const logger = { error: vi.fn(), info: vi.fn(), warn: vi.fn() };
-		const getSchema = vi.fn().mockResolvedValue({});
-		let cb: ((input: EmailOptions) => Promise<EmailOptions>) | undefined;
-		const filter2 = vi.fn((_e: string, c: typeof cb) => {
-			cb = c;
+	it('passes through when no row is protected', async () => {
+		const { services } = makeServices({
+			items: {
+				email_templates: {
+					readMany: vi
+						.fn()
+						.mockResolvedValue([{ template_key: 'x', is_protected: false }]),
+				},
+			},
 		});
-		hook(
-			{ filter: filter2 } as any,
-			{ services: {} as any, logger, getSchema, env: {} } as any,
+		const { reg } = register({ services });
+		const payload = ['1'];
+		const out = await reg.filters['email_templates.items.delete']!(payload);
+		expect(out).toBe(payload);
+	});
+});
+
+describe('variables items.delete filter (protected guard)', () => {
+	it('passes through an empty payload', async () => {
+		const { services } = makeServices();
+		const { reg } = register({ services });
+		await reg.filters['email_template_variables.items.delete']!(undefined);
+	});
+
+	it('throws when any variable row is protected', async () => {
+		const { services } = makeServices({
+			items: {
+				email_template_variables: {
+					readMany: vi
+						.fn()
+						.mockResolvedValue([
+							{ template_key: 'base', variable_name: 'url', is_protected: true },
+						]),
+				},
+			},
+		});
+		const { reg } = register({ services });
+		await expect(reg.filters['email_template_variables.items.delete']!(['1'])).rejects.toThrow(
+			/protected variable/i,
 		);
-		const locale = { 'password-reset': { subject: 'S', from_name: 'N' } };
-		const trans = { subject: 'S', from_name: 'N' };
-		mockResolveLocale.mockResolvedValue(locale);
-		mockExtractTemplateTrans.mockReturnValue(trans);
-		mockExtractRecipientEmail.mockReturnValue('u@example.com');
-		await cb!(makeEmail('password-reset'));
-		expect(mockApplyTranslations).toHaveBeenCalledWith(expect.anything(), trans, '');
+	});
+
+	it('passes through when no variable row is protected', async () => {
+		const { services } = makeServices({
+			items: {
+				email_template_variables: {
+					readMany: vi
+						.fn()
+						.mockResolvedValue([
+							{ template_key: 'x', variable_name: 'url', is_protected: false },
+						]),
+				},
+			},
+		});
+		const { reg } = register({ services });
+		const payload = ['1'];
+		const out = await reg.filters['email_template_variables.items.delete']!(payload);
+		expect(out).toBe(payload);
 	});
 });
