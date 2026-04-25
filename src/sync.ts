@@ -1,102 +1,100 @@
-import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { ExtensionsServices, SchemaOverview } from '@directus/types';
-import type { Logger } from './types';
-import { fetchAllTemplateRows } from './directus';
-import { BASE_LAYOUT_KEY } from './constants';
-import type { EmailTemplateRow, LocaleData, TemplateTrans } from './types';
+import type { EmailTemplateRow, Logger } from './types';
+import { SYNC_AUDIT_COLLECTION, TEMPLATES_COLLECTION } from './constants';
+import { computeChecksum } from './integrity';
 
-/**
- * Build the LocaleData object for a single language from a flat list of
- * active template rows. Shape matches what src/locale.ts and
- * applyTranslationsToEmail already consume.
- */
-export function buildLocaleData(rows: EmailTemplateRow[]): LocaleData {
-	const locale: LocaleData = {};
-	for (const row of rows) {
-		const trans: TemplateTrans = { ...row.strings };
-		if (row.subject) trans.subject = row.subject;
-		if (row.from_name) trans.from_name = row.from_name;
-		locale[row.template_key] = trans;
-	}
-	// Promote base row's from_name to top-level org default when present.
-	const base = rows.find((r) => r.template_key === BASE_LAYOUT_KEY);
-	if (base?.from_name) locale.from_name = base.from_name;
-	return locale;
+/** Disk path for a template body file. */
+export function templateFilePath(templatesPath: string, templateKey: string): string {
+	return join(templatesPath, `${templateKey}.liquid`);
 }
 
 /**
- * Group template rows by language.
- */
-function groupByLanguage(rows: EmailTemplateRow[]): Map<string, EmailTemplateRow[]> {
-	const map = new Map<string, EmailTemplateRow[]>();
-	for (const row of rows) {
-		const bucket = map.get(row.language) ?? [];
-		bucket.push(row);
-		map.set(row.language, bucket);
-	}
-	return map;
-}
-
-/**
- * Atomic JSON write: write to a temp file, then rename over target.
+ * Atomic text write: write to a temp file, then rename over target.
  * Prevents partial files being read mid-write by a concurrent send.
  */
-async function atomicWriteJson(targetPath: string, data: unknown): Promise<void> {
+async function atomicWriteText(targetPath: string, data: string): Promise<void> {
 	await mkdir(dirname(targetPath), { recursive: true });
 	const tmp = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
-	await writeFile(tmp, JSON.stringify(data, null, 2), 'utf-8');
+	await writeFile(tmp, data, 'utf-8');
 	await rename(tmp, targetPath);
 }
 
-export function localeFilePath(templatesPath: string, language: string): string {
-	return join(templatesPath, 'locales', `${language}.json`);
+/** Read existing body from disk if present, otherwise null. */
+export async function readTemplateFromDisk(
+	templatesPath: string,
+	templateKey: string,
+): Promise<string | null> {
+	if (!templatesPath) return null;
+	try {
+		return await readFile(templateFilePath(templatesPath, templateKey), 'utf-8');
+	} catch {
+		return null;
+	}
+}
+
+async function writeAudit(
+	templateKey: string,
+	reason: string,
+	action: string,
+	services: ExtensionsServices,
+	schema: SchemaOverview,
+	logger: Pick<Logger, 'warn'>,
+): Promise<void> {
+	try {
+		const items = new services.ItemsService(SYNC_AUDIT_COLLECTION, {
+			schema,
+			accountability: null,
+		});
+		await items.createOne({ template_key: templateKey, reason, action });
+	} catch (err) {
+		logger.warn(`[i18n-email] Audit row skipped: ${(err as Error).message}`);
+	}
 }
 
 /**
- * Rebuild every locales/{lang}.json file from the current DB rows.
+ * Write a single template body to disk and update the row's
+ * `checksum` + `last_synced_at`. Safe to call repeatedly; only the
+ * body file and the two metadata fields are touched.
  */
-export async function syncAllLocales(
+export async function syncTemplateBody(
+	row: EmailTemplateRow,
 	templatesPath: string,
 	services: ExtensionsServices,
 	schema: SchemaOverview,
 	logger: Pick<Logger, 'info' | 'warn' | 'error'>,
+	reason = 'body-write',
 ): Promise<void> {
 	if (!templatesPath) {
-		logger.warn('[i18n-email] EMAIL_TEMPLATES_PATH not set — skipping locale file sync.');
+		logger.warn('[i18n-email] EMAIL_TEMPLATES_PATH not set — skipping body sync.');
 		return;
 	}
-	const rows = await fetchAllTemplateRows(services, schema);
-	const grouped = groupByLanguage(rows);
-	for (const [language, langRows] of grouped) {
-		const locale = buildLocaleData(langRows);
-		const target = localeFilePath(templatesPath, language);
+	const target = templateFilePath(templatesPath, row.template_key);
+	try {
+		await atomicWriteText(target, row.body);
+	} catch (err) {
+		logger.error(`[i18n-email] Failed to write ${target}: ${(err as Error).message}`);
+		return;
+	}
+	logger.info(`[i18n-email] Synced ${row.template_key}.liquid.`);
+
+	await writeAudit(row.template_key, reason, 'body-write', services, schema, logger);
+
+	if (row.id) {
 		try {
-			await atomicWriteJson(target, locale);
-			logger.info(
-				`[i18n-email] Synced locales/${language}.json (${langRows.length} templates).`,
-			);
+			const items = new services.ItemsService(TEMPLATES_COLLECTION, {
+				schema,
+				accountability: null,
+			});
+			await items.updateOne(row.id, {
+				checksum: computeChecksum({ body: row.body }),
+				last_synced_at: new Date().toISOString(),
+			});
 		} catch (err) {
-			logger.error(`[i18n-email] Failed to write ${target}: ${(err as Error).message}`);
+			logger.warn(
+				`[i18n-email] Failed to update sync metadata for ${row.template_key}: ${(err as Error).message}`,
+			);
 		}
 	}
-}
-
-/**
- * Rebuild a single locales/{lang}.json from the current DB rows.
- */
-export async function syncLocale(
-	language: string,
-	templatesPath: string,
-	services: ExtensionsServices,
-	schema: SchemaOverview,
-	logger: Pick<Logger, 'info' | 'warn' | 'error'>,
-): Promise<void> {
-	if (!templatesPath) return;
-	const rows = (await fetchAllTemplateRows(services, schema)).filter(
-		(r) => r.language === language,
-	);
-	const target = localeFilePath(templatesPath, language);
-	await atomicWriteJson(target, buildLocaleData(rows));
-	logger.info(`[i18n-email] Synced locales/${language}.json (${rows.length} templates).`);
 }
