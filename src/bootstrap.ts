@@ -131,17 +131,23 @@ async function createRelationsIfMissing(
 }
 
 /**
- * Graceful relation-meta migration for EXISTING relations:
+ * Graceful relation migration for EXISTING relations:
  *  - Walks `ALL_RELATIONS` and, for each one already present in the DB,
  *    upserts its `meta` (e.g. `junction_field`, `one_field`,
  *    `one_deselect_action`) so future schema tweaks ship automatically.
+ *  - Detects relations registered without an underlying DB foreign-key
+ *    constraint (`schema === null`) or with the wrong `on_delete`
+ *    behaviour, and rebuilds them via DELETE + recreate so referential
+ *    integrity is enforced (e.g. cascade-deleting translation rows when
+ *    a parent template or language is removed).
  *  - Skips missing relations entirely — `createRelationsIfMissing`
  *    handles those.
  *  - Failures per-relation are logged and do not abort bootstrap.
  *
  * Critical for upgrades from earlier extension versions that shipped
- * the translations junction without `junction_field` cross-refs, which
- * caused the translations interface to fail to render.
+ * the translations junction without `junction_field` cross-refs (caused
+ * the translations interface to fail to render) or without DB-level FK
+ * constraints (allowed orphan rows when a related row was deleted).
  */
 async function migrateRelationsMeta(
 	services: ExtensionsServices,
@@ -155,13 +161,45 @@ async function migrateRelationsMeta(
 	}
 	const svc = new RelationsService({ schema, accountability: null });
 	for (const rel of ALL_RELATIONS) {
-		let exists: boolean;
+		let existing: any;
 		try {
-			exists = !!(await svc.readOne(rel.collection, rel.field));
+			existing = await svc.readOne(rel.collection, rel.field);
 		} catch {
-			exists = false;
+			existing = null;
 		}
-		if (!exists || !rel.meta) continue;
+		if (!existing) continue;
+
+		// Detect missing or drifted DB-level FK and rebuild via DELETE + create.
+		const expectedOnDelete = (rel.schema as any)?.on_delete;
+		const actualSchema = existing.schema;
+		const fkBroken =
+			!!expectedOnDelete &&
+			(actualSchema === null ||
+				typeof actualSchema !== 'object' ||
+				actualSchema.on_delete !== expectedOnDelete);
+		if (fkBroken) {
+			if (typeof svc.deleteOne !== 'function' || typeof svc.createOne !== 'function') {
+				logger.warn(
+					'[i18n-email] RelationsService.deleteOne/createOne not available — cannot rebuild FK.',
+				);
+			} else {
+				try {
+					await svc.deleteOne(rel.collection, rel.field);
+					await svc.createOne(rel);
+					logger.info(
+						`[i18n-email] Rebuilt relation ${rel.collection}.${rel.field} to install FK (on_delete=${expectedOnDelete}).`,
+					);
+					continue;
+				} catch (err) {
+					logger.warn(
+						`[i18n-email] Relation rebuild skipped for ${rel.collection}.${rel.field}: ${(err as Error).message}`,
+					);
+					// Fall through to a meta-only update so we still patch what we can.
+				}
+			}
+		}
+
+		if (!rel.meta) continue;
 		if (typeof svc.updateOne !== 'function') {
 			logger.warn(
 				'[i18n-email] RelationsService.updateOne not available — skipping relation migration.',

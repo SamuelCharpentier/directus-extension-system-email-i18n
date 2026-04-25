@@ -415,6 +415,7 @@ export const ALL_RELATIONS: readonly RelationPayload[] = [
 			junction_field: 'email_templates_id',
 			sort_field: null,
 		},
-		schema: { on_delete: 'NO ACTION' },
+		// CASCADE so deleting a language removes its orphan translation rows.
+		schema: { on_delete: 'CASCADE' },
 	},
 ];

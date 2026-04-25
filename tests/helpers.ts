@@ -27,6 +27,7 @@ export type ServicesInit = {
 		readOne: (c: string, f: string) => Promise<any>;
 		createOne: (payload: any) => Promise<any>;
 		updateOne: (c: string, f: string, data: any) => Promise<any>;
+		deleteOne: (c: string, f: string) => Promise<any>;
 	}>;
 	fields?: Partial<{
 		readOne: (c: string, f: string) => Promise<any>;
@@ -47,6 +48,7 @@ export type ServicesMock = {
 	_collectionsCreated: any[];
 	_relationsCreated: any[];
 	_relationsUpdated: any[];
+	_relationsDeleted: any[];
 	_fieldsCreated: any[];
 	_fieldsUpdated: any[];
 };
@@ -82,6 +84,7 @@ export function makeServices(init: ServicesInit = {}): ServicesMock {
 	const collectionsCreated: any[] = [];
 	const relationsCreated: any[] = [];
 	const relationsUpdated: any[] = [];
+	const relationsDeleted: any[] = [];
 	const fieldsCreated: any[] = [];
 	const fieldsUpdated: any[] = [];
 
@@ -204,6 +207,12 @@ export function makeServices(init: ServicesInit = {}): ServicesMock {
 					relationsUpdated.push({ collection, field, data });
 					return { collection, field };
 				}),
+			deleteOne:
+				init.relations?.deleteOne ??
+				(async (collection: string, field: string) => {
+					relationsDeleted.push({ collection, field });
+					return { collection, field };
+				}),
 		};
 	}
 
@@ -241,6 +250,7 @@ export function makeServices(init: ServicesInit = {}): ServicesMock {
 		_collectionsCreated: collectionsCreated,
 		_relationsCreated: relationsCreated,
 		_relationsUpdated: relationsUpdated,
+		_relationsDeleted: relationsDeleted,
 		_fieldsCreated: fieldsCreated,
 		_fieldsUpdated: fieldsUpdated,
 	};

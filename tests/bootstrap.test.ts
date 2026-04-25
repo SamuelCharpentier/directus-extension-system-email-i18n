@@ -101,7 +101,11 @@ describe('runBootstrap', () => {
 	it('skips relation when readOne finds existing', async () => {
 		const s = makeServices({
 			relations: {
-				readOne: async () => ({ collection: 'x', field: 'y' }),
+				readOne: async (c: string, f: string) => ({
+					collection: c,
+					field: f,
+					schema: { on_delete: 'CASCADE' },
+				}),
 			},
 		});
 		const logger = makeLogger();
@@ -251,15 +255,22 @@ describe('runBootstrap', () => {
 	});
 
 	describe('relation migration', () => {
+		// Healthy existing relation: schema includes the expected on_delete so
+		// migrateRelationsMeta takes the meta-only update path (no FK rebuild).
+		const healthyReadOne = async (c: string, f: string) => ({
+			collection: c,
+			field: f,
+			schema: { on_delete: 'CASCADE' },
+		});
+
 		it('upserts meta on existing relations with junction_field cross-refs', async () => {
 			const s = makeServices({
-				relations: {
-					readOne: async (c: string, f: string) => ({ collection: c, field: f }),
-				},
+				relations: { readOne: healthyReadOne },
 			});
 			const logger = makeLogger();
 			await runBootstrap(dir, s as any, getSchema, logger);
 			expect(s._relationsCreated.length).toBe(0);
+			expect(s._relationsDeleted.length).toBe(0);
 			expect(s._relationsUpdated.length).toBe(2);
 			const fwd = s._relationsUpdated.find((u: any) => u.field === 'email_templates_id');
 			expect(fwd).toBeTruthy();
@@ -275,12 +286,13 @@ describe('runBootstrap', () => {
 			await runBootstrap(dir, s as any, getSchema, logger);
 			// fresh bootstrap: relations were just created, so no migration updates
 			expect(s._relationsUpdated.length).toBe(0);
+			expect(s._relationsDeleted.length).toBe(0);
 		});
 
 		it('logs and continues when relation migration throws per-relation', async () => {
 			const s = makeServices({
 				relations: {
-					readOne: async (c: string, f: string) => ({ collection: c, field: f }),
+					readOne: healthyReadOne,
 					updateOne: async () => {
 						throw new Error('nope');
 					},
@@ -295,9 +307,7 @@ describe('runBootstrap', () => {
 
 		it('warns when RelationsService.updateOne is unavailable', async () => {
 			const s = makeServices({
-				relations: {
-					readOne: async (c: string, f: string) => ({ collection: c, field: f }),
-				},
+				relations: { readOne: healthyReadOne },
 			});
 			const originalRelations = (s as any).RelationsService;
 			(s as any).RelationsService = function (opts: any) {
@@ -310,6 +320,65 @@ describe('runBootstrap', () => {
 			expect(logger.warn).toHaveBeenCalledWith(
 				expect.stringContaining('updateOne not available'),
 			);
+		});
+
+		it('rebuilds relations whose DB foreign key was never installed', async () => {
+			// Simulates the legacy bug where /relations registered the meta
+			// row but Directus never installed the underlying FK constraint.
+			const s = makeServices({
+				relations: {
+					readOne: async (c: string, f: string) => ({
+						collection: c,
+						field: f,
+						schema: null,
+					}),
+				},
+			});
+			const logger = makeLogger();
+			await runBootstrap(dir, s as any, getSchema, logger);
+			expect(s._relationsDeleted.length).toBe(2);
+			expect(s._relationsCreated.length).toBe(2);
+			expect(s._relationsUpdated.length).toBe(0);
+			const fwd = s._relationsCreated.find((c: any) => c.field === 'email_templates_id');
+			expect(fwd?.schema?.on_delete).toBe('CASCADE');
+		});
+
+		it('rebuilds relations whose on_delete drifted from the expected value', async () => {
+			const s = makeServices({
+				relations: {
+					readOne: async (c: string, f: string) => ({
+						collection: c,
+						field: f,
+						schema: { on_delete: 'NO ACTION' },
+					}),
+				},
+			});
+			const logger = makeLogger();
+			await runBootstrap(dir, s as any, getSchema, logger);
+			expect(s._relationsDeleted.length).toBe(2);
+			expect(s._relationsCreated.length).toBe(2);
+		});
+
+		it('falls back to meta update when rebuild deleteOne fails', async () => {
+			const s = makeServices({
+				relations: {
+					readOne: async (c: string, f: string) => ({
+						collection: c,
+						field: f,
+						schema: null,
+					}),
+					deleteOne: async () => {
+						throw new Error('locked');
+					},
+				},
+			});
+			const logger = makeLogger();
+			await runBootstrap(dir, s as any, getSchema, logger);
+			expect(logger.warn).toHaveBeenCalledWith(
+				expect.stringContaining('Relation rebuild skipped'),
+			);
+			// fell through to meta update
+			expect(s._relationsUpdated.length).toBe(2);
 		});
 	});
 });
