@@ -194,13 +194,10 @@ describe('runBootstrap', () => {
 			expect(s._fieldsCreated.length).toBe(0);
 			expect(s._fieldsUpdated.length).toBeGreaterThan(0);
 			const translationsUpdate = s._fieldsUpdated.find(
-				(u: any) =>
-					u.collection === 'email_templates' && u.field.field === 'translations',
+				(u: any) => u.collection === 'email_templates' && u.field.field === 'translations',
 			);
 			expect(translationsUpdate).toBeTruthy();
-			expect(translationsUpdate.field.meta.options.template).toContain(
-				'languages_code.name',
-			);
+			expect(translationsUpdate.field.meta.options.template).toContain('languages_code.name');
 		});
 
 		it('creates missing fields on existing collections', async () => {
@@ -218,8 +215,7 @@ describe('runBootstrap', () => {
 			await runBootstrap(dir, s as any, getSchema, logger);
 			expect(s._fieldsCreated.length).toBeGreaterThan(0);
 			const tField = s._fieldsCreated.find(
-				(c: any) =>
-					c.collection === 'email_templates' && c.field.field === 'translations',
+				(c: any) => c.collection === 'email_templates' && c.field.field === 'translations',
 			);
 			expect(tField).toBeTruthy();
 		});
