@@ -207,7 +207,16 @@ async function migrateRelationsMeta(
 			return;
 		}
 		try {
-			await svc.updateOne(rel.collection, rel.field, { meta: rel.meta });
+			// Pass full relation payload (including `related_collection` and
+			// `schema`) — Directus's RelationsService.updateOne calls
+			// alterType() which dereferences `relation.related_collection`
+			// without a guard, throwing an unhandled rejection inside the
+			// knex transaction when only `meta` is supplied.
+			await svc.updateOne(rel.collection, rel.field, {
+				related_collection: rel.related_collection,
+				meta: rel.meta,
+				...(rel.schema ? { schema: rel.schema } : {}),
+			});
 		} catch (err) {
 			logger.warn(
 				`[i18n-email] Relation migrate skipped for ${rel.collection}.${rel.field}: ${(err as Error).message}`,
