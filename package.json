@@ -1,6 +1,6 @@
 {
 	"name": "directus-extension-i18n-email",
-	"version": "1.1.11",
+	"version": "0.0.1",
 	"description": "Directus CMS extension to translate emails (password reset, user registration and invitation)",
 	"author": {
 		"email": "scharpentier0@gmail.com",
