@@ -178,4 +178,79 @@ describe('runBootstrap', () => {
 		await runBootstrap(dir, s as any, getSchema, logger);
 		expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('Bootstrap failed'));
 	});
+
+	describe('field migration', () => {
+		it('upserts meta on existing fields without recreating them', async () => {
+			const s = makeServices({
+				collections: {
+					readOne: async () => ({ collection: 'x' }),
+				},
+				fields: {
+					readOne: async () => ({ field: 'translations' }),
+				},
+			});
+			const logger = makeLogger();
+			await runBootstrap(dir, s as any, getSchema, logger);
+			expect(s._fieldsCreated.length).toBe(0);
+			expect(s._fieldsUpdated.length).toBeGreaterThan(0);
+			const translationsUpdate = s._fieldsUpdated.find(
+				(u: any) =>
+					u.collection === 'email_templates' && u.field.field === 'translations',
+			);
+			expect(translationsUpdate).toBeTruthy();
+			expect(translationsUpdate.field.meta.options.template).toContain(
+				'languages_code.name',
+			);
+		});
+
+		it('creates missing fields on existing collections', async () => {
+			const s = makeServices({
+				collections: {
+					readOne: async () => ({ collection: 'x' }),
+				},
+				fields: {
+					readOne: async () => {
+						throw new Error('not found');
+					},
+				},
+			});
+			const logger = makeLogger();
+			await runBootstrap(dir, s as any, getSchema, logger);
+			expect(s._fieldsCreated.length).toBeGreaterThan(0);
+			const tField = s._fieldsCreated.find(
+				(c: any) =>
+					c.collection === 'email_templates' && c.field.field === 'translations',
+			);
+			expect(tField).toBeTruthy();
+		});
+
+		it('warns when FieldsService is missing', async () => {
+			const s = makeServices({
+				collections: { readOne: async () => ({ collection: 'x' }) },
+			});
+			(s as any).FieldsService = undefined;
+			const logger = makeLogger();
+			await runBootstrap(dir, s as any, getSchema, logger);
+			expect(logger.warn).toHaveBeenCalledWith(
+				expect.stringContaining('FieldsService not available'),
+			);
+		});
+
+		it('logs and continues when field migration throws per-field', async () => {
+			const s = makeServices({
+				collections: { readOne: async () => ({ collection: 'x' }) },
+				fields: {
+					readOne: async () => ({ field: 'x' }),
+					updateField: async () => {
+						throw new Error('nope');
+					},
+				},
+			});
+			const logger = makeLogger();
+			await runBootstrap(dir, s as any, getSchema, logger);
+			expect(logger.warn).toHaveBeenCalledWith(
+				expect.stringContaining('Field migrate skipped'),
+			);
+		});
+	});
 });

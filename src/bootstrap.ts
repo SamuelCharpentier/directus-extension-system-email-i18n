@@ -48,6 +48,55 @@ async function createCollectionIfMissing(
 	logger.info(`[i18n-email] Created collection ${payload.collection}.`);
 }
 
+/**
+ * Graceful field migration for an EXISTING collection:
+ *  - Adds any field defined in the payload that is missing on the DB.
+ *  - Upserts `meta` (interface, options, display, notes, etc.) on every
+ *    field in the payload so future schema tweaks ship automatically.
+ *
+ * Never alters column types or drops fields — those need an explicit
+ * migration. Failures per-field are logged and do not abort bootstrap.
+ */
+async function migrateCollectionFields(
+	payload: (typeof ALL_COLLECTIONS)[number],
+	services: ExtensionsServices,
+	schema: SchemaOverview,
+	logger: Pick<Logger, 'info' | 'warn'>,
+): Promise<void> {
+	const FieldsService = (services as any).FieldsService;
+	if (typeof FieldsService !== 'function') {
+		logger.warn('[i18n-email] FieldsService not available — skipping field migration.');
+		return;
+	}
+	if (!(await collectionExists(payload.collection, services, schema))) return;
+	const fields = new FieldsService({ schema, accountability: null });
+	for (const field of payload.fields) {
+		let exists: boolean;
+		try {
+			const current = await fields.readOne(payload.collection, field.field);
+			exists = !!current;
+		} catch {
+			exists = false;
+		}
+		try {
+			if (!exists) {
+				await fields.createField(payload.collection, field);
+				logger.info(`[i18n-email] Added field ${payload.collection}.${field.field}.`);
+			} else if (field.meta) {
+				// Upsert meta only — never alter the underlying column.
+				await fields.updateField(payload.collection, {
+					field: field.field,
+					meta: field.meta,
+				});
+			}
+		} catch (err) {
+			logger.warn(
+				`[i18n-email] Field migrate skipped for ${payload.collection}.${field.field}: ${(err as Error).message}`,
+			);
+		}
+	}
+}
+
 async function createRelationsIfMissing(
 	services: ExtensionsServices,
 	schema: SchemaOverview,
@@ -247,6 +296,10 @@ export async function runBootstrap(
 			let schema = await getSchema();
 			for (const payload of ALL_COLLECTIONS) {
 				await createCollectionIfMissing(payload, services, schema, logger);
+			}
+			schema = await getSchema();
+			for (const payload of ALL_COLLECTIONS) {
+				await migrateCollectionFields(payload, services, schema, logger);
 			}
 			schema = await getSchema();
 			await createRelationsIfMissing(services, schema, logger);

@@ -27,6 +27,11 @@ export type ServicesInit = {
 		readOne: (c: string, f: string) => Promise<any>;
 		createOne: (payload: any) => Promise<any>;
 	}>;
+	fields?: Partial<{
+		readOne: (c: string, f: string) => Promise<any>;
+		createField: (c: string, field: any) => Promise<any>;
+		updateField: (c: string, field: any) => Promise<any>;
+	}>;
 };
 
 export type ServicesMock = {
@@ -35,10 +40,13 @@ export type ServicesMock = {
 	MailService: any;
 	CollectionsService: any;
 	RelationsService: any;
+	FieldsService: any;
 	_stores: ItemsStore;
 	_mailSends: any[];
 	_collectionsCreated: any[];
 	_relationsCreated: any[];
+	_fieldsCreated: any[];
+	_fieldsUpdated: any[];
 };
 
 const matchFilter = (row: any, filter: any): boolean => {
@@ -71,6 +79,8 @@ export function makeServices(init: ServicesInit = {}): ServicesMock {
 	const mailSends: any[] = [];
 	const collectionsCreated: any[] = [];
 	const relationsCreated: any[] = [];
+	const fieldsCreated: any[] = [];
+	const fieldsUpdated: any[] = [];
 
 	for (const [name, cfg] of Object.entries(init.items ?? {})) {
 		stores[name] = cfg.rows ? [...cfg.rows] : [];
@@ -188,16 +198,41 @@ export function makeServices(init: ServicesInit = {}): ServicesMock {
 		};
 	}
 
+	function FieldsService(_opts: any) {
+		return {
+			readOne:
+				init.fields?.readOne ??
+				(async (_c: string, _f: string) => {
+					throw new Error('no field');
+				}),
+			createField:
+				init.fields?.createField ??
+				(async (collection: string, field: any) => {
+					fieldsCreated.push({ collection, field });
+					return field;
+				}),
+			updateField:
+				init.fields?.updateField ??
+				(async (collection: string, field: any) => {
+					fieldsUpdated.push({ collection, field });
+					return field;
+				}),
+		};
+	}
+
 	return {
 		ItemsService,
 		SettingsService,
 		MailService,
 		CollectionsService,
 		RelationsService,
+		FieldsService,
 		_stores: stores,
 		_mailSends: mailSends,
 		_collectionsCreated: collectionsCreated,
 		_relationsCreated: relationsCreated,
+		_fieldsCreated: fieldsCreated,
+		_fieldsUpdated: fieldsUpdated,
 	};
 }
 

@@ -184,6 +184,8 @@ export const EMAIL_TEMPLATES_COLLECTION: CollectionPayload = {
 				special: ['translations'],
 				options: {
 					languageField: 'languages_code',
+					languageDirectionField: 'direction',
+					template: '{{ languages_code.name }} ({{ languages_code.code }})',
 					defaultOpenSplitView: true,
 				},
 				width: 'full',
@@ -231,6 +233,8 @@ export const EMAIL_TEMPLATE_TRANSLATIONS_COLLECTION: CollectionPayload = {
 			meta: {
 				interface: 'select-dropdown-m2o',
 				special: ['m2o'],
+				display: 'related-values',
+				display_options: { template: '{{ template_key }}' },
 				required: true,
 				width: 'half',
 			},
@@ -242,6 +246,8 @@ export const EMAIL_TEMPLATE_TRANSLATIONS_COLLECTION: CollectionPayload = {
 			meta: {
 				interface: 'select-dropdown-m2o',
 				special: ['m2o'],
+				display: 'related-values',
+				display_options: { template: '{{ name }} ({{ code }})' },
 				required: true,
 				width: 'half',
 			},
