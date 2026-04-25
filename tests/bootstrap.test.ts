@@ -252,6 +252,33 @@ describe('runBootstrap', () => {
 				expect.stringContaining('Field migrate skipped'),
 			);
 		});
+
+		it('warns when an alias field exists as a real DB column', async () => {
+			// Legacy schema: an older extension version registered
+			// `translations` as a real text column. Don't try to alter the
+			// column — surface a clear operator warning and move on.
+			const s = makeServices({
+				collections: { readOne: async () => ({ collection: 'x' }) },
+				fields: {
+					readOne: async (_c: string, f: string) =>
+						f === 'translations'
+							? { field: 'translations', type: 'text' }
+							: { field: f, type: 'string' },
+				},
+			});
+			const logger = makeLogger();
+			await runBootstrap(dir, s as any, getSchema, logger);
+			expect(logger.warn).toHaveBeenCalledWith(
+				expect.stringContaining(
+					'email_templates.translations is declared as alias but a real "text" column exists',
+				),
+			);
+			// updateField MUST NOT fire for the conflicting alias field.
+			const aliasUpdate = s._fieldsUpdated.find(
+				(u: any) => u.field.field === 'translations',
+			);
+			expect(aliasUpdate).toBeUndefined();
+		});
 	});
 
 	describe('relation migration', () => {
@@ -360,8 +387,8 @@ describe('runBootstrap', () => {
 		});
 
 		it('rebuilds relations whose DB foreign key was never installed', async () => {
-			// Simulates the legacy bug where /relations registered the meta
-			// row but Directus never installed the underlying FK constraint.
+			// Stale directus_relations row with no FK schema: warn the
+			// operator instead of attempting a brittle delete+recreate.
 			const s = makeServices({
 				relations: {
 					readOne: async (c: string, f: string) => ({
@@ -374,11 +401,12 @@ describe('runBootstrap', () => {
 			});
 			const logger = makeLogger();
 			await runBootstrap(dir, s as any, getSchema, logger);
-			expect(s._relationsDeleted.length).toBe(2);
-			expect(s._relationsCreated.length).toBe(2);
+			expect(s._relationsDeleted.length).toBe(0);
+			expect(s._relationsCreated.length).toBe(0);
 			expect(s._relationsUpdated.length).toBe(0);
-			const fwd = s._relationsCreated.find((c: any) => c.field === 'email_templates_id');
-			expect(fwd?.schema?.on_delete).toBe('CASCADE');
+			expect(logger.warn).toHaveBeenCalledWith(
+				expect.stringContaining('stale directus_relations row'),
+			);
 		});
 
 		it('rebuilds relations whose on_delete drifted from the expected value', async () => {
@@ -394,31 +422,11 @@ describe('runBootstrap', () => {
 			});
 			const logger = makeLogger();
 			await runBootstrap(dir, s as any, getSchema, logger);
-			expect(s._relationsDeleted.length).toBe(2);
-			expect(s._relationsCreated.length).toBe(2);
-		});
-
-		it('falls back to meta update when rebuild deleteOne fails', async () => {
-			const s = makeServices({
-				relations: {
-					readOne: async (c: string, f: string) => ({
-						collection: c,
-						field: f,
-						schema: null,
-						meta: {},
-					}),
-					deleteOne: async () => {
-						throw new Error('locked');
-					},
-				},
-			});
-			const logger = makeLogger();
-			await runBootstrap(dir, s as any, getSchema, logger);
+			expect(s._relationsDeleted.length).toBe(0);
+			expect(s._relationsCreated.length).toBe(0);
 			expect(logger.warn).toHaveBeenCalledWith(
-				expect.stringContaining('Relation rebuild skipped'),
+				expect.stringContaining('stale directus_relations row'),
 			);
-			// fell through to meta update
-			expect(s._relationsUpdated.length).toBe(2);
 		});
 	});
 });

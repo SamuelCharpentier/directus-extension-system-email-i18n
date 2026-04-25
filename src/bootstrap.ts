@@ -71,13 +71,31 @@ async function migrateCollectionFields(
 	if (!(await collectionExists(payload.collection, services, schema))) return;
 	const fields = new FieldsService({ schema, accountability: null });
 	for (const field of payload.fields) {
-		let exists: boolean;
+		let current: any;
 		try {
-			const current = await fields.readOne(payload.collection, field.field);
-			exists = !!current;
+			current = await fields.readOne(payload.collection, field.field);
 		} catch {
-			exists = false;
+			current = null;
 		}
+		const exists = !!current;
+
+		// Guard against legacy schema: an older version of this extension
+		// may have registered an alias field (e.g. `translations`) as a
+		// real DB column. We never alter column types, so just warn the
+		// operator — they need to drop the stray column manually before
+		// queries against this collection will work.
+		if (
+			exists &&
+			field.type === 'alias' &&
+			current?.type &&
+			current.type !== 'alias'
+		) {
+			logger.warn(
+				`[i18n-email] Field ${payload.collection}.${field.field} is declared as alias but a real "${current.type}" column exists in the DB. Drop the column manually (e.g. via SQL) so this extension can register the o2m alias.`,
+			);
+			continue;
+		}
+
 		try {
 			if (!exists) {
 				await fields.createField(payload.collection, field);
@@ -169,7 +187,15 @@ async function migrateRelationsMeta(
 		}
 		if (!existing) continue;
 
-		// Detect missing or drifted DB-level FK and rebuild via DELETE + create.
+		// Detect a stale `directus_relations` row whose underlying DB-level
+		// FK is missing or has the wrong on_delete. We do NOT try to
+		// auto-rebuild — Directus's RelationsService.deleteOne does not
+		// always synchronously drop the FK constraint, so a follow-up
+		// createOne reliably trips "Field already has an associated
+		// relationship". Instead, log a clear operator warning. The fix is
+		// a one-time manual `DELETE FROM directus_relations WHERE …` and a
+		// restart, after which createRelationsIfMissing installs the
+		// relation cleanly with the correct schema.
 		const expectedOnDelete = (rel.schema as any)?.on_delete;
 		const actualSchema = existing.schema;
 		const fkBroken =
@@ -178,25 +204,10 @@ async function migrateRelationsMeta(
 				typeof actualSchema !== 'object' ||
 				actualSchema.on_delete !== expectedOnDelete);
 		if (fkBroken) {
-			if (typeof svc.deleteOne !== 'function' || typeof svc.createOne !== 'function') {
-				logger.warn(
-					'[i18n-email] RelationsService.deleteOne/createOne not available — cannot rebuild FK.',
-				);
-			} else {
-				try {
-					await svc.deleteOne(rel.collection, rel.field);
-					await svc.createOne(rel);
-					logger.info(
-						`[i18n-email] Rebuilt relation ${rel.collection}.${rel.field} to install FK (on_delete=${expectedOnDelete}).`,
-					);
-					continue;
-				} catch (err) {
-					logger.warn(
-						`[i18n-email] Relation rebuild skipped for ${rel.collection}.${rel.field}: ${(err as Error).message}`,
-					);
-					// Fall through to a meta-only update so we still patch what we can.
-				}
-			}
+			logger.warn(
+				`[i18n-email] Relation ${rel.collection}.${rel.field} has a stale directus_relations row (expected on_delete=${expectedOnDelete}, found ${JSON.stringify(actualSchema)}). Delete the row manually and restart so the FK can be re-created with cascade behaviour.`,
+			);
+			continue;
 		}
 
 		if (!rel.meta) continue;
