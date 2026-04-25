@@ -1,24 +1,16 @@
-import type { EmailOptions } from '@directus/types';
-import type { ExtensionsServices, SchemaOverview } from '@directus/types';
+import type { EmailOptions, ExtensionsServices, SchemaOverview } from '@directus/types';
 import type { Logger } from './types';
-import { fetchDefaultLang, fetchProjectName, fetchUserLang, fetchTemplateRow } from './directus';
+import {
+	fetchDefaultLang,
+	fetchProjectName,
+	fetchRecipientUser,
+	fetchTemplateWithTranslation,
+	fetchUserLang,
+} from './directus';
 import { applyTranslationsToEmail, extractRecipientEmail } from './email';
 import { validateRequiredVariables } from './registry';
 import { notifyAdmins, isAdminErrorTemplate } from './admin-alert';
-import type { EmailTemplateRow, TemplateTrans } from './types';
-import { BASE_LAYOUT_KEY } from './constants';
-
-/**
- * Turn a DB row into the flat TemplateTrans shape expected by
- * applyTranslationsToEmail (subject + from_name + spread strings).
- */
-function rowToTrans(row: EmailTemplateRow): TemplateTrans {
-	return {
-		...row.strings,
-		...(row.subject ? { subject: row.subject } : {}),
-		...(row.from_name ? { from_name: row.from_name } : {}),
-	};
-}
+import { BASE_LAYOUT_KEY, isSystemTemplateKey } from './constants';
 
 export type SendFilterDeps = {
 	services: ExtensionsServices;
@@ -28,12 +20,15 @@ export type SendFilterDeps = {
 };
 
 /**
- * The `email.send` filter body. Pulls translations from the DB, applies
- * subject/from/i18n to the email, validates required variables, and
- * notifies admins on failures.
+ * The `email.send` filter body.
  *
- * Non-matching template names pass through untouched so callers that
- * rely on raw Directus template rendering are unaffected.
+ * 1. Resolve recipient language (user → settings → env → 'en').
+ * 2. Fetch template + translation for that language (with fallback).
+ * 3. Validate required variables.
+ * 4. For protected system emails, hydrate `user` from directus_users.
+ * 5. Inject i18n + base strings + subject + from-name into the email.
+ *
+ * Unknown template names pass through unchanged.
  */
 export async function runSendFilter(
 	input: EmailOptions,
@@ -42,7 +37,6 @@ export async function runSendFilter(
 	const { services, getSchema, logger, env } = deps;
 	const templateName = input.template?.name;
 	if (!templateName) return input;
-	// Never re-process the admin-error send itself — prevents loops.
 	if (isAdminErrorTemplate(templateName)) return input;
 
 	try {
@@ -55,34 +49,32 @@ export async function runSendFilter(
 		]);
 		const effectiveLang = userLang ?? defaultLang;
 
-		// Primary lookup: (key, effectiveLang). Fallback: (key, defaultLang).
-		let row = await fetchTemplateRow(templateName, effectiveLang, services, schema);
-		if (!row) {
-			if (effectiveLang !== defaultLang) {
-				row = await fetchTemplateRow(templateName, defaultLang, services, schema);
-			}
-		}
-		if (!row) {
-			logger.info(
-				`[i18n-email] No DB template for "${templateName}" in ${effectiveLang}/${defaultLang} — passing through.`,
-			);
+		const resolved = await fetchTemplateWithTranslation(
+			templateName,
+			effectiveLang,
+			defaultLang,
+			services,
+			schema,
+		);
+		if (!resolved) {
+			logger.info(`[i18n-email] No DB template for "${templateName}" — passing through.`);
 			return input;
 		}
+		const { row, translation } = resolved;
 
 		// Required-variable validation.
-		const data = (input.template!.data ?? {}) as Record<string, unknown>;
+		const data = (input.template?.data ?? {}) as Record<string, unknown>;
 		const validation = await validateRequiredVariables(templateName, data, services, schema);
 		if (!validation.ok) {
 			const reason = `Missing required variable(s) for template "${templateName}"`;
 			logger.error(
 				`[i18n-email] ${reason}: ${validation.missing.join(', ')} — aborting send.`,
 			);
-			// Fire-and-forget admin alert (don't await — don't block the throw).
 			void notifyAdmins(
 				reason,
 				{
 					template: templateName,
-					language: row.language,
+					language: translation?.languages_code ?? effectiveLang,
 					missing: validation.missing,
 					recipient: recipientEmail,
 				},
@@ -93,29 +85,43 @@ export async function runSendFilter(
 			throw new Error(`${reason}: ${validation.missing.join(', ')}`);
 		}
 
-		// Apply subject/from/i18n from DB row.
-		const trans = rowToTrans(row);
+		// Base translation for i18n.base.*
+		const baseLang = translation?.languages_code ?? effectiveLang;
+		const baseResolved = await fetchTemplateWithTranslation(
+			BASE_LAYOUT_KEY,
+			baseLang,
+			defaultLang,
+			services,
+			schema,
+		);
+		const baseStrings = baseResolved?.translation?.strings ?? null;
+
+		// User hydration for protected system emails.
+		let recipientUser = null;
+		if (isSystemTemplateKey(row.template_key) && recipientEmail) {
+			const existingUser = (input.template?.data as Record<string, unknown> | undefined)?.[
+				'user'
+			];
+			if (!existingUser) {
+				recipientUser = await fetchRecipientUser(recipientEmail, services, schema);
+			}
+		}
+
 		const envFromName =
 			typeof env['I18N_EMAIL_FALLBACK_FROM_NAME'] === 'string'
 				? (env['I18N_EMAIL_FALLBACK_FROM_NAME'] as string)
-				: undefined;
-		const effectiveTrans = trans.from_name
-			? trans
-			: { ...trans, from_name: envFromName ?? projectName ?? undefined };
+				: null;
+		const fallbackFromName = envFromName ?? projectName;
 		const fromEnv = typeof env['EMAIL_FROM'] === 'string' ? (env['EMAIL_FROM'] as string) : '';
-		applyTranslationsToEmail(input, effectiveTrans, fromEnv);
 
-		// Merge the base layout strings (if any) as i18n.base.*
-		const baseRow = await fetchTemplateRow(BASE_LAYOUT_KEY, row.language, services, schema);
-		if (baseRow) {
-			// applyTranslationsToEmail guarantees input.template.data.i18n exists.
-			const template = input.template!;
-			const data = template.data as Record<string, unknown>;
-			const existing = data['i18n'] as Record<string, unknown>;
-			data['i18n'] = { ...existing, base: baseRow.strings };
-		}
+		applyTranslationsToEmail(input, {
+			translation,
+			baseStrings,
+			fallbackFromName,
+			fromEnv,
+			recipientUser,
+		});
 	} catch (err) {
-		// Re-throw validation errors so the send actually aborts.
 		if (err instanceof Error && err.message.startsWith('Missing required variable')) {
 			throw err;
 		}

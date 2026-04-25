@@ -1,5 +1,5 @@
 import type { EmailOptions } from '@directus/types';
-import type { TemplateTrans } from './types';
+import type { EmailTemplateTranslationRow, RecipientUser, TranslationStrings } from './types';
 
 const EMAIL_ADDRESS_PATTERN = /<([^>]+)>$/;
 
@@ -19,29 +19,44 @@ function extractAddressFromEnv(emailFrom: string): string {
 	return match ? match[1]! : emailFrom.trim();
 }
 
-export function applyTranslationsToEmail(
-	email: EmailOptions,
-	trans: TemplateTrans,
-	fromEnv: string,
-): void {
-	if (trans.subject) {
-		email.subject = trans.subject;
+export type ApplyTranslationInput = {
+	translation: EmailTemplateTranslationRow | null;
+	baseStrings: TranslationStrings | null;
+	fallbackFromName: string | null;
+	fromEnv: string;
+	recipientUser: RecipientUser | null;
+};
+
+/**
+ * Mutate the outgoing EmailOptions with the resolved translation:
+ *   - override subject if provided
+ *   - override from-name if provided (or fallback)
+ *   - inject `i18n` + `i18n.base` into template.data
+ *   - inject `user` into template.data when hydrated
+ */
+export function applyTranslationsToEmail(email: EmailOptions, input: ApplyTranslationInput): void {
+	const { translation, baseStrings, fallbackFromName, fromEnv, recipientUser } = input;
+	const strings = translation?.strings ?? {};
+
+	if (translation?.subject) {
+		email.subject = translation.subject;
 	}
 
-	if (trans.from_name) {
+	const fromName = translation?.from_name || fallbackFromName;
+	if (fromName && fromEnv) {
 		const address = extractAddressFromEnv(fromEnv);
-		// Cast needed: EmailOptions types `from` as string, but nodemailer
-		// accepts the Address object form and handles RFC 5322 encoding correctly.
-		(email as any).from = { name: trans.from_name, address };
+		// Cast: EmailOptions types `from` as string, but nodemailer accepts
+		// the Address object form for proper RFC 5322 encoding.
+		(email as any).from = { name: fromName, address };
 	}
 
-	if (email.template) {
-		const i18n = Object.fromEntries(
-			Object.entries(trans).filter(
-				([key, value]) =>
-					key !== 'subject' && key !== 'from_name' && typeof value === 'string',
-			),
-		);
-		email.template.data = { ...email.template.data, i18n };
-	}
+	if (!email.template) return;
+	const existing = (email.template.data ?? {}) as Record<string, unknown>;
+	const i18n: Record<string, unknown> = { ...strings };
+	if (baseStrings) i18n['base'] = baseStrings;
+	email.template.data = {
+		...existing,
+		i18n,
+		...(recipientUser ? { user: recipientUser } : {}),
+	};
 }
