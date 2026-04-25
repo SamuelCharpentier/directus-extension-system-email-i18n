@@ -1,23 +1,23 @@
 import type { ExtensionsServices, SchemaOverview } from '@directus/types';
-import type { Logger } from './types';
+import type { EmailTemplateRow, Logger } from './types';
 import {
-	TEMPLATES_COLLECTION,
-	VARIABLES_COLLECTION,
-	SYNC_AUDIT_COLLECTION,
+	LANGUAGES_COLLECTION,
 	PROTECTED_TEMPLATE_KEYS,
+	TEMPLATES_COLLECTION,
+	TRANSLATIONS_COLLECTION,
+	VARIABLES_COLLECTION,
 } from './constants';
-import {
-	ALL_COLLECTIONS,
-	EMAIL_TEMPLATES_COLLECTION,
-	EMAIL_TEMPLATE_VARIABLES_COLLECTION,
-	EMAIL_TEMPLATE_SYNC_AUDIT_COLLECTION,
-} from './schema';
-import { SEED_TEMPLATES, SEED_VARIABLES } from './seeds';
+import { ALL_COLLECTIONS, ALL_RELATIONS } from './schema';
+import { SEED_LANGUAGES, SEED_TEMPLATES, SEED_TRANSLATIONS, SEED_VARIABLES } from './seeds';
 import { computeChecksum } from './integrity';
-import { syncAllLocales } from './sync';
+import { readTemplateFromDisk, syncTemplateBody } from './sync';
 
 let bootstrapRan = false;
 let bootstrapInFlight: Promise<void> | null = null;
+
+function isProtectedKey(key: string): boolean {
+	return (PROTECTED_TEMPLATE_KEYS as readonly string[]).includes(key);
+}
 
 async function collectionExists(
 	collection: string,
@@ -40,7 +40,7 @@ async function createCollectionIfMissing(
 	payload: (typeof ALL_COLLECTIONS)[number],
 	services: ExtensionsServices,
 	schema: SchemaOverview,
-	logger: Pick<Logger, 'info' | 'warn' | 'error'>,
+	logger: Pick<Logger, 'info'>,
 ): Promise<void> {
 	if (await collectionExists(payload.collection, services, schema)) return;
 	const collectionsService = new services.CollectionsService({ schema, accountability: null });
@@ -48,55 +48,158 @@ async function createCollectionIfMissing(
 	logger.info(`[i18n-email] Created collection ${payload.collection}.`);
 }
 
-function isProtectedKey(key: string): boolean {
-	return (PROTECTED_TEMPLATE_KEYS as readonly string[]).includes(key);
-}
-
-async function seedTemplates(
+async function createRelationsIfMissing(
 	services: ExtensionsServices,
 	schema: SchemaOverview,
-	logger: Pick<Logger, 'info' | 'warn' | 'error'>,
+	logger: Pick<Logger, 'info' | 'warn'>,
 ): Promise<void> {
+	// RelationsService is available on `services`. Some older Directus
+	// versions (or stripped test mocks) may not expose it — non-fatal.
+	const RelationsService = (services as any).RelationsService;
+	if (typeof RelationsService !== 'function') {
+		logger.warn('[i18n-email] RelationsService not available — skipping relation creation.');
+		return;
+	}
+	const svc = new RelationsService({ schema, accountability: null });
+	for (const rel of ALL_RELATIONS) {
+		try {
+			const existing = await svc.readOne(rel.collection, rel.field);
+			if (existing) continue;
+		} catch {
+			// readOne throws when the relation doesn't exist — fall through to create.
+		}
+		try {
+			await svc.createOne(rel);
+			logger.info(
+				`[i18n-email] Created relation ${rel.collection}.${rel.field} → ${rel.related_collection}.`,
+			);
+		} catch (err) {
+			logger.warn(
+				`[i18n-email] Relation create skipped for ${rel.collection}.${rel.field}: ${(err as Error).message}`,
+			);
+		}
+	}
+}
+
+async function seedLanguages(
+	services: ExtensionsServices,
+	schema: SchemaOverview,
+	logger: Pick<Logger, 'info'>,
+): Promise<void> {
+	const items = new services.ItemsService(LANGUAGES_COLLECTION, {
+		schema,
+		accountability: null,
+	});
+	for (const lang of SEED_LANGUAGES) {
+		const existing = await items.readByQuery({
+			filter: { code: { _eq: lang.code } },
+			limit: 1,
+		});
+		if (existing.length > 0) continue;
+		await items.createOne(lang);
+		logger.info(`[i18n-email] Seeded language ${lang.code}.`);
+	}
+}
+
+/**
+ * Seed template rows. If a `.liquid` file exists on disk for a
+ * given template_key AND no DB row exists yet, the disk body takes
+ * precedence over the shipped default. Never overwrites existing
+ * DB rows.
+ */
+async function seedTemplates(
+	templatesPath: string,
+	services: ExtensionsServices,
+	schema: SchemaOverview,
+	logger: Pick<Logger, 'info'>,
+): Promise<EmailTemplateRow[]> {
 	const items = new services.ItemsService(TEMPLATES_COLLECTION, {
 		schema,
 		accountability: null,
 	});
+	const insertedOrExisting: EmailTemplateRow[] = [];
 	for (const seed of SEED_TEMPLATES) {
 		const existing = await items.readByQuery({
+			filter: { template_key: { _eq: seed.template_key } },
+			limit: 1,
+		});
+		if (existing.length > 0) {
+			insertedOrExisting.push(existing[0] as EmailTemplateRow);
+			continue;
+		}
+		const diskBody = await readTemplateFromDisk(templatesPath, seed.template_key);
+		const body = diskBody ?? seed.body;
+		const checksum = computeChecksum({ body });
+		const id = await items.createOne({
+			template_key: seed.template_key,
+			category: seed.category,
+			body,
+			description: seed.description,
+			is_active: true,
+			is_protected: isProtectedKey(seed.template_key),
+			checksum,
+			last_synced_at: null,
+		});
+		logger.info(
+			`[i18n-email] Seeded template ${seed.template_key}${diskBody ? ' (from existing disk file)' : ''}.`,
+		);
+		insertedOrExisting.push({
+			...(id ? { id: String(id) } : {}),
+			template_key: seed.template_key,
+			category: seed.category,
+			body,
+			description: seed.description,
+			is_active: true,
+			is_protected: isProtectedKey(seed.template_key),
+			checksum,
+			last_synced_at: null,
+		});
+	}
+	return insertedOrExisting;
+}
+
+async function seedTranslations(
+	templateRows: EmailTemplateRow[],
+	services: ExtensionsServices,
+	schema: SchemaOverview,
+	logger: Pick<Logger, 'info' | 'warn'>,
+): Promise<void> {
+	const items = new services.ItemsService(TRANSLATIONS_COLLECTION, {
+		schema,
+		accountability: null,
+	});
+	const byKey = new Map(templateRows.map((r) => [r.template_key, r]));
+	for (const seed of SEED_TRANSLATIONS) {
+		const parent = byKey.get(seed.template_key);
+		if (!parent || !parent.id) {
+			logger.warn(
+				`[i18n-email] Skipping translation seed for ${seed.template_key}/${seed.languages_code}: parent row missing.`,
+			);
+			continue;
+		}
+		const existing = await items.readByQuery({
 			filter: {
-				template_key: { _eq: seed.template_key },
-				language: { _eq: seed.language },
+				email_templates_id: { _eq: parent.id },
+				languages_code: { _eq: seed.languages_code },
 			},
 			limit: 1,
 		});
 		if (existing.length > 0) continue;
-		const checksum = computeChecksum({
-			subject: seed.subject,
-			from_name: seed.from_name,
-			strings: seed.strings,
-		});
 		await items.createOne({
-			template_key: seed.template_key,
-			language: seed.language,
-			category: seed.category,
+			email_templates_id: parent.id,
+			languages_code: seed.languages_code,
 			subject: seed.subject,
 			from_name: seed.from_name,
 			strings: seed.strings,
-			description: seed.description,
-			is_active: true,
-			is_protected: isProtectedKey(seed.template_key),
-			version: 1,
-			checksum,
-			last_synced_at: null,
 		});
-		logger.info(`[i18n-email] Seeded template ${seed.template_key} (${seed.language}).`);
+		logger.info(`[i18n-email] Seeded translation ${seed.template_key}/${seed.languages_code}.`);
 	}
 }
 
 async function seedVariables(
 	services: ExtensionsServices,
 	schema: SchemaOverview,
-	logger: Pick<Logger, 'info' | 'warn' | 'error'>,
+	logger: Pick<Logger, 'info'>,
 ): Promise<void> {
 	const items = new services.ItemsService(VARIABLES_COLLECTION, {
 		schema,
@@ -124,9 +227,10 @@ async function seedVariables(
 }
 
 /**
- * Idempotent bootstrap: creates collections if missing, seeds protected
- * system templates, and syncs initial locale files to disk. Safe to run
- * on every startup. Never overwrites admin-edited rows.
+ * Idempotent bootstrap: creates collections + relations if missing,
+ * seeds protected templates (preferring any existing on-disk body over
+ * the shipped default), seeds translations + variables, and flushes
+ * each template body to disk. Never overwrites admin-edited DB rows.
  */
 export async function runBootstrap(
 	templatesPath: string,
@@ -141,24 +245,20 @@ export async function runBootstrap(
 		logger.info('[i18n-email] Bootstrap started.');
 		try {
 			let schema = await getSchema();
-			await createCollectionIfMissing(EMAIL_TEMPLATES_COLLECTION, services, schema, logger);
-			await createCollectionIfMissing(
-				EMAIL_TEMPLATE_VARIABLES_COLLECTION,
-				services,
-				schema,
-				logger,
-			);
-			await createCollectionIfMissing(
-				EMAIL_TEMPLATE_SYNC_AUDIT_COLLECTION,
-				services,
-				schema,
-				logger,
-			);
-			// Re-fetch schema after collection creation so ItemsService sees new collections.
+			for (const payload of ALL_COLLECTIONS) {
+				await createCollectionIfMissing(payload, services, schema, logger);
+			}
 			schema = await getSchema();
-			await seedTemplates(services, schema, logger);
+			await createRelationsIfMissing(services, schema, logger);
+			schema = await getSchema();
+			await seedLanguages(services, schema, logger);
+			const templateRows = await seedTemplates(templatesPath, services, schema, logger);
+			await seedTranslations(templateRows, services, schema, logger);
 			await seedVariables(services, schema, logger);
-			await syncAllLocales(templatesPath, services, schema, logger);
+			// Flush each template body to disk so Directus's MailService can render it.
+			for (const row of templateRows) {
+				await syncTemplateBody(row, templatesPath, services, schema, logger, 'bootstrap');
+			}
 			bootstrapRan = true;
 			logger.info('[i18n-email] Bootstrap completed.');
 		} catch (err) {
@@ -173,7 +273,6 @@ export async function runBootstrap(
 	return bootstrapInFlight;
 }
 
-// Exported for tests.
 export const __INTERNAL__ = {
 	reset(): void {
 		bootstrapRan = false;
@@ -182,9 +281,7 @@ export const __INTERNAL__ = {
 	get ran(): boolean {
 		return bootstrapRan;
 	},
-	collections: {
-		TEMPLATES_COLLECTION,
-		VARIABLES_COLLECTION,
-		SYNC_AUDIT_COLLECTION,
+	get inFlight(): Promise<void> | null {
+		return bootstrapInFlight;
 	},
 };
