@@ -377,7 +377,17 @@ export const ALL_COLLECTIONS: readonly CollectionPayload[] = [
 	EMAIL_TEMPLATE_SYNC_AUDIT_COLLECTION,
 ];
 
-/** Relations registered after collections exist. */
+/**
+ * Relations registered after collections exist.
+ *
+ * Both relations on the `email_template_translations` junction MUST
+ * declare `junction_field` cross-references to one another. Without
+ * them Directus computes the parent o2m alias's `localType` as plain
+ * `o2m` instead of `translations`, and the translations interface —
+ * which only registers for `localTypes:['translations']` — refuses to
+ * render ("interface introuvable"). With both fields set the alias is
+ * classified correctly and the per-language tab editor appears.
+ */
 export const ALL_RELATIONS: readonly RelationPayload[] = [
 	{
 		collection: TRANSLATIONS_COLLECTION,
@@ -385,6 +395,7 @@ export const ALL_RELATIONS: readonly RelationPayload[] = [
 		related_collection: TEMPLATES_COLLECTION,
 		meta: {
 			one_field: 'translations',
+			junction_field: 'languages_code',
 			sort_field: null,
 			one_deselect_action: 'delete',
 		},
@@ -396,7 +407,10 @@ export const ALL_RELATIONS: readonly RelationPayload[] = [
 		collection: TRANSLATIONS_COLLECTION,
 		field: 'languages_code',
 		related_collection: LANGUAGES_COLLECTION,
-		meta: { sort_field: null },
+		meta: {
+			junction_field: 'email_templates_id',
+			sort_field: null,
+		},
 		schema: { on_delete: 'NO ACTION' },
 	},
 ];

@@ -130,6 +130,54 @@ async function createRelationsIfMissing(
 	}
 }
 
+/**
+ * Graceful relation-meta migration for EXISTING relations:
+ *  - Walks `ALL_RELATIONS` and, for each one already present in the DB,
+ *    upserts its `meta` (e.g. `junction_field`, `one_field`,
+ *    `one_deselect_action`) so future schema tweaks ship automatically.
+ *  - Skips missing relations entirely — `createRelationsIfMissing`
+ *    handles those.
+ *  - Failures per-relation are logged and do not abort bootstrap.
+ *
+ * Critical for upgrades from earlier extension versions that shipped
+ * the translations junction without `junction_field` cross-refs, which
+ * caused the translations interface to fail to render.
+ */
+async function migrateRelationsMeta(
+	services: ExtensionsServices,
+	schema: SchemaOverview,
+	logger: Pick<Logger, 'info' | 'warn'>,
+): Promise<void> {
+	const RelationsService = (services as any).RelationsService;
+	if (typeof RelationsService !== 'function') {
+		logger.warn('[i18n-email] RelationsService not available — skipping relation migration.');
+		return;
+	}
+	const svc = new RelationsService({ schema, accountability: null });
+	for (const rel of ALL_RELATIONS) {
+		let exists: boolean;
+		try {
+			exists = !!(await svc.readOne(rel.collection, rel.field));
+		} catch {
+			exists = false;
+		}
+		if (!exists || !rel.meta) continue;
+		if (typeof svc.updateOne !== 'function') {
+			logger.warn(
+				'[i18n-email] RelationsService.updateOne not available — skipping relation migration.',
+			);
+			return;
+		}
+		try {
+			await svc.updateOne(rel.collection, rel.field, { meta: rel.meta });
+		} catch (err) {
+			logger.warn(
+				`[i18n-email] Relation migrate skipped for ${rel.collection}.${rel.field}: ${(err as Error).message}`,
+			);
+		}
+	}
+}
+
 async function seedLanguages(
 	services: ExtensionsServices,
 	schema: SchemaOverview,
@@ -303,6 +351,8 @@ export async function runBootstrap(
 			}
 			schema = await getSchema();
 			await createRelationsIfMissing(services, schema, logger);
+			schema = await getSchema();
+			await migrateRelationsMeta(services, schema, logger);
 			schema = await getSchema();
 			await seedLanguages(services, schema, logger);
 			const templateRows = await seedTemplates(templatesPath, services, schema, logger);

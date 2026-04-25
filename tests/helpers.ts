@@ -26,6 +26,7 @@ export type ServicesInit = {
 	relations?: Partial<{
 		readOne: (c: string, f: string) => Promise<any>;
 		createOne: (payload: any) => Promise<any>;
+		updateOne: (c: string, f: string, data: any) => Promise<any>;
 	}>;
 	fields?: Partial<{
 		readOne: (c: string, f: string) => Promise<any>;
@@ -45,6 +46,7 @@ export type ServicesMock = {
 	_mailSends: any[];
 	_collectionsCreated: any[];
 	_relationsCreated: any[];
+	_relationsUpdated: any[];
 	_fieldsCreated: any[];
 	_fieldsUpdated: any[];
 };
@@ -79,6 +81,7 @@ export function makeServices(init: ServicesInit = {}): ServicesMock {
 	const mailSends: any[] = [];
 	const collectionsCreated: any[] = [];
 	const relationsCreated: any[] = [];
+	const relationsUpdated: any[] = [];
 	const fieldsCreated: any[] = [];
 	const fieldsUpdated: any[] = [];
 
@@ -195,6 +198,12 @@ export function makeServices(init: ServicesInit = {}): ServicesMock {
 					relationsCreated.push(payload);
 					return payload;
 				}),
+			updateOne:
+				init.relations?.updateOne ??
+				(async (collection: string, field: string, data: any) => {
+					relationsUpdated.push({ collection, field, data });
+					return { collection, field };
+				}),
 		};
 	}
 
@@ -231,6 +240,7 @@ export function makeServices(init: ServicesInit = {}): ServicesMock {
 		_mailSends: mailSends,
 		_collectionsCreated: collectionsCreated,
 		_relationsCreated: relationsCreated,
+		_relationsUpdated: relationsUpdated,
 		_fieldsCreated: fieldsCreated,
 		_fieldsUpdated: fieldsUpdated,
 	};

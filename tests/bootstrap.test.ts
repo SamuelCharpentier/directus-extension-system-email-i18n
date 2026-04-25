@@ -249,4 +249,67 @@ describe('runBootstrap', () => {
 			);
 		});
 	});
+
+	describe('relation migration', () => {
+		it('upserts meta on existing relations with junction_field cross-refs', async () => {
+			const s = makeServices({
+				relations: {
+					readOne: async (c: string, f: string) => ({ collection: c, field: f }),
+				},
+			});
+			const logger = makeLogger();
+			await runBootstrap(dir, s as any, getSchema, logger);
+			expect(s._relationsCreated.length).toBe(0);
+			expect(s._relationsUpdated.length).toBe(2);
+			const fwd = s._relationsUpdated.find((u: any) => u.field === 'email_templates_id');
+			expect(fwd).toBeTruthy();
+			expect(fwd.data.meta.junction_field).toBe('languages_code');
+			const rev = s._relationsUpdated.find((u: any) => u.field === 'languages_code');
+			expect(rev).toBeTruthy();
+			expect(rev.data.meta.junction_field).toBe('email_templates_id');
+		});
+
+		it('skips migration for relations that do not yet exist', async () => {
+			const s = makeServices();
+			const logger = makeLogger();
+			await runBootstrap(dir, s as any, getSchema, logger);
+			// fresh bootstrap: relations were just created, so no migration updates
+			expect(s._relationsUpdated.length).toBe(0);
+		});
+
+		it('logs and continues when relation migration throws per-relation', async () => {
+			const s = makeServices({
+				relations: {
+					readOne: async (c: string, f: string) => ({ collection: c, field: f }),
+					updateOne: async () => {
+						throw new Error('nope');
+					},
+				},
+			});
+			const logger = makeLogger();
+			await runBootstrap(dir, s as any, getSchema, logger);
+			expect(logger.warn).toHaveBeenCalledWith(
+				expect.stringContaining('Relation migrate skipped'),
+			);
+		});
+
+		it('warns when RelationsService.updateOne is unavailable', async () => {
+			const s = makeServices({
+				relations: {
+					readOne: async (c: string, f: string) => ({ collection: c, field: f }),
+				},
+			});
+			const originalRelations = (s as any).RelationsService;
+			(s as any).RelationsService = function (opts: any) {
+				const inst = originalRelations(opts);
+				delete inst.updateOne;
+				return inst;
+			};
+			const logger = makeLogger();
+			await runBootstrap(dir, s as any, getSchema, logger);
+			expect(logger.warn).toHaveBeenCalledWith(
+				expect.stringContaining('updateOne not available'),
+			);
+		});
+	});
 });
