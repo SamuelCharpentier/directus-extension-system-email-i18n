@@ -1,8 +1,9 @@
 # Directus i18n Email Extension
 
-Database-backed, multilingual transactional email for Directus. Translate system emails (password reset, user invitation, user registration) into every recipient's language — and ship your own transactional templates the same way.
+Database-backed, multilingual transactional email for Directus. You will be able to translate system emails (password reset, user invitation, user registration) into every language you need to support — and ship your own transactional templates the same way.
 
 - **DB is the source of truth.** Each email lives as a single `email_templates` row whose Liquid `body` is the template; translatable copy (subject, from-name, i18n strings) lives in `email_template_translations`, one row per language, edited through Directus's native translations interface.
+- **Liquid everywhere translatable.** Subject, from-name, and every value inside `strings` are Liquid-rendered against the same data context as the body — so translators can write `{{ user.first_name }}` (or any caller-supplied variable) directly inside a translated string or subject line, where word order varies by language.
 - **Body is mirrored to disk.** Whenever a `body` is created or updated, the extension writes `EMAIL_TEMPLATES_PATH/<template_key>.liquid` so Directus's `MailService` can render it. Translations stay in the DB — no `.json` locale files.
 - **Idempotent bootstrap.** Required collections, relations, field meta, languages, system templates, and the variable registry are created or migrated on every boot. Existing rows are never overwritten.
 - **Variable registry.** Declare required variables per template; missing variables abort the send and notify admins.
@@ -226,7 +227,17 @@ Templates are yours to design. Inside a template body you have access to:
 | `{{ user.* }}`      | Recipient lookup (system templates only)    | `id`, `first_name`, `last_name`, `email`, `language`          |
 | _other_             | Your caller                                 | Anything you passed in `template.data`                        |
 
-Translation `subject`, `from_name`, and every value inside `strings` are themselves Liquid-rendered against the same data context (minus `i18n` itself) before being injected. So `{{ i18n.greeting }}` can resolve to `"Hello, John!"` from a translation value of `"Hello, {{ user.first_name }}!"`.
+### Liquid in translation fields
+
+Translation `subject`, `from_name`, and every value inside `strings` are themselves Liquid-rendered against the same data context the body sees (minus `i18n` itself — translations can't reference themselves). This applies equally to all three fields, so any of these work:
+
+| Field in `email_template_translations` | Example value                   | Renders to      |
+| -------------------------------------- | ------------------------------- | --------------- |
+| `subject`                              | `Bonjour {{ user.first_name }}` | `Bonjour Marie` |
+| `from_name`                            | `{{ projectName }} Support`     | `Acme Support`  |
+| `strings.greeting`                     | `Hello, {{ user.first_name }}!` | `Hello, John!`  |
+
+The rendered `subject` overrides the email's subject; the rendered `from_name` overrides the sender display-name; rendered `strings` are exposed to the body as `{{ i18n.* }}`. If a value contains no Liquid tokens it's used as-is. If Liquid parsing fails for a value, the raw string is used and a warning is logged — a bad translation never aborts the send.
 
 ### Minimal example
 
