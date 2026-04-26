@@ -371,8 +371,6 @@ describe('runSendFilter', () => {
 		const input = mkInput();
 		await runSendFilter(input as any, deps(s));
 		expect(input.template.data.i18n.heading).toBe('{% bogus %}');
-		expect(logger.warn).toHaveBeenCalledWith(
-			expect.stringContaining('Liquid render failed'),
-		);
+		expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Liquid render failed'));
 	});
 });
