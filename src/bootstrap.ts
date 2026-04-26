@@ -210,8 +210,6 @@ async function migrateRelationsMeta(
 			continue;
 		}
 
-		if (!rel.meta) continue;
-
 		// Skip the updateOne call entirely when the existing meta already
 		// matches what we want. Directus's RelationsService.updateOne
 		// unconditionally drops + re-adds the underlying FK constraint and
@@ -249,7 +247,7 @@ async function migrateRelationsMeta(
 				field: rel.field,
 				related_collection: rel.related_collection,
 				meta: rel.meta,
-				...(rel.schema ? { schema: rel.schema } : {}),
+				schema: rel.schema,
 			});
 		} catch (err) {
 			logger.warn(
