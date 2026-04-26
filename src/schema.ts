@@ -85,6 +85,7 @@ export const LANGUAGES_COLLECTION_PAYLOAD: CollectionPayload = {
 			type: 'string',
 			meta: {
 				interface: 'system-language',
+				display: 'system-language',
 				required: true,
 				width: 'full',
 			},

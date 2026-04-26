@@ -49,11 +49,12 @@ describe('schema', () => {
 		expect(ALL_COLLECTIONS).toContain(EMAIL_TEMPLATE_VARIABLES_COLLECTION);
 		expect(ALL_COLLECTIONS).toContain(EMAIL_TEMPLATE_SYNC_AUDIT_COLLECTION);
 	});
-	it('languages collection has only `code` with system-language interface', () => {
+	it('languages collection has only `code` with system-language interface + display', () => {
 		const fields = LANGUAGES_COLLECTION_PAYLOAD.fields;
 		expect(fields.map((f) => f.field)).toEqual(['code']);
 		const codeField = fields[0]!;
 		expect((codeField.meta as any)?.interface).toBe('system-language');
+		expect((codeField.meta as any)?.display).toBe('system-language');
 		expect((codeField.schema as any)?.is_primary_key).toBe(true);
 	});
 	it('defines body + translations alias on email_templates', () => {
