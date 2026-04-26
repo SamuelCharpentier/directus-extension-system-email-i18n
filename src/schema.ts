@@ -25,8 +25,8 @@ export type RelationPayload = {
 	collection: string;
 	field: string;
 	related_collection: string;
-	meta?: Record<string, unknown>;
-	schema?: Record<string, unknown>;
+	meta: Record<string, unknown>;
+	schema: Record<string, unknown>;
 };
 
 const uuidPkField: FieldPayload = {
