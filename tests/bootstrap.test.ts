@@ -200,9 +200,7 @@ describe('runBootstrap', () => {
 		await runBootstrap(dir, s as any, getSchema, logger);
 		// Still exactly the two we pre-seeded — no duplicates.
 		expect(s._stores.languages?.length).toBe(2);
-		expect(logger.info).not.toHaveBeenCalledWith(
-			expect.stringContaining('Seeded language'),
-		);
+		expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('Seeded language'));
 	});
 
 	it('skips re-seeding variables that already exist', async () => {
@@ -227,9 +225,7 @@ describe('runBootstrap', () => {
 		await runBootstrap(dir, s as any, getSchema, logger);
 		// No new variable rows added.
 		expect(s._stores.email_template_variables?.length).toBe(6);
-		expect(logger.info).not.toHaveBeenCalledWith(
-			expect.stringContaining('Seeded variable'),
-		);
+		expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('Seeded variable'));
 	});
 
 	it('skips re-seeding translations that already exist', async () => {
@@ -367,9 +363,7 @@ describe('runBootstrap', () => {
 				),
 			);
 			// updateField MUST NOT fire for the conflicting alias field.
-			const aliasUpdate = s._fieldsUpdated.find(
-				(u: any) => u.field.field === 'translations',
-			);
+			const aliasUpdate = s._fieldsUpdated.find((u: any) => u.field.field === 'translations');
 			expect(aliasUpdate).toBeUndefined();
 		});
 	});
