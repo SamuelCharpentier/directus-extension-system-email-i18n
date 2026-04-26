@@ -14,34 +14,34 @@ import {
 } from '../src/directus';
 
 describe('fetchDefaultLang', () => {
-	it('strips region suffix', async () => {
+	it('returns full BCP-47 tag from settings (no region stripping)', async () => {
 		const s = makeServices({
 			settings: { readSingleton: async () => ({ default_language: 'fr-CA' }) },
 		});
-		expect(await fetchDefaultLang(s as any, makeSchema(), {})).toBe('fr');
+		expect(await fetchDefaultLang(s as any, makeSchema(), {})).toBe('fr-CA');
 	});
-	it('uses env fallback when unset', async () => {
+	it('uses env fallback when settings unset', async () => {
 		const s = makeServices({
 			settings: { readSingleton: async () => ({ default_language: null }) },
 		});
 		expect(
-			await fetchDefaultLang(s as any, makeSchema(), { I18N_EMAIL_FALLBACK_LANG: 'de' }),
-		).toBe('de');
+			await fetchDefaultLang(s as any, makeSchema(), { I18N_EMAIL_FALLBACK_LANG: 'de-DE' }),
+		).toBe('de-DE');
 	});
-	it('hardcoded default when env missing', async () => {
+	it('falls back to en-US when neither settings nor env supply a value', async () => {
 		const s = makeServices({
 			settings: { readSingleton: async () => ({ default_language: '' }) },
 		});
-		expect(await fetchDefaultLang(s as any, makeSchema(), {})).toBe('en');
+		expect(await fetchDefaultLang(s as any, makeSchema(), {})).toBe('en-US');
 	});
 });
 
 describe('fetchUserLang', () => {
-	it('returns primary tag', async () => {
+	it('returns the full BCP-47 tag stored on the user', async () => {
 		const s = makeServices({
 			items: { directus_users: { rows: [{ email: 'a@b.co', language: 'fr-CA' }] } },
 		});
-		expect(await fetchUserLang('a@b.co', s as any, makeSchema())).toBe('fr');
+		expect(await fetchUserLang('a@b.co', s as any, makeSchema())).toBe('fr-CA');
 	});
 	it('returns null when user missing', async () => {
 		const s = makeServices({ items: { directus_users: { rows: [] } } });
@@ -50,12 +50,6 @@ describe('fetchUserLang', () => {
 	it('returns null when language empty', async () => {
 		const s = makeServices({
 			items: { directus_users: { rows: [{ email: 'a@b.co', language: '' }] } },
-		});
-		expect(await fetchUserLang('a@b.co', s as any, makeSchema())).toBeNull();
-	});
-	it('returns null when language primary tag is empty (leading dash)', async () => {
-		const s = makeServices({
-			items: { directus_users: { rows: [{ email: 'a@b.co', language: '-CA' }] } },
 		});
 		expect(await fetchUserLang('a@b.co', s as any, makeSchema())).toBeNull();
 	});
@@ -169,6 +163,74 @@ describe('fetchTemplateWithTranslation', () => {
 		expect(
 			await fetchTemplateWithTranslation('x', 'en', 'en', s as any, makeSchema()),
 		).toBeNull();
+	});
+	it('falls through empty placeholder (subject empty + strings {}) to default-lang row', async () => {
+		// effective lang has a row, but it's the empty-default placeholder shape.
+		// Fallback chain must continue to the default-lang row.
+		const s = makeServices({
+			items: {
+				email_templates: {
+					rows: [{ id: '1', template_key: 'x', is_active: true }],
+				},
+				email_template_translations: {
+					rows: [
+						{
+							id: 'empty-fr',
+							email_templates_id: '1',
+							languages_code: 'fr-FR',
+							subject: '',
+							from_name: null,
+							strings: {},
+						},
+						{
+							id: 'full-en',
+							email_templates_id: '1',
+							languages_code: 'en-US',
+							subject: 'Hello',
+							from_name: null,
+							strings: { greeting: 'hi' },
+						},
+					],
+				},
+			},
+		});
+		const r = await fetchTemplateWithTranslation(
+			'x',
+			'fr-FR',
+			'en-US',
+			s as any,
+			makeSchema(),
+		);
+		expect(r?.translation?.id).toBe('full-en');
+	});
+	it('keeps placeholder when effective lang IS default lang (no fallback target)', async () => {
+		const s = makeServices({
+			items: {
+				email_templates: {
+					rows: [{ id: '1', template_key: 'x', is_active: true }],
+				},
+				email_template_translations: {
+					rows: [
+						{
+							id: 'empty-en',
+							email_templates_id: '1',
+							languages_code: 'en-US',
+							subject: '',
+							from_name: null,
+							strings: {},
+						},
+					],
+				},
+			},
+		});
+		const r = await fetchTemplateWithTranslation(
+			'x',
+			'en-US',
+			'en-US',
+			s as any,
+			makeSchema(),
+		);
+		expect(r?.translation?.id).toBe('empty-en');
 	});
 });
 

@@ -126,11 +126,11 @@ export function makeServices(init: ServicesInit = {}): ServicesMock {
 	}
 
 	function SettingsService(_opts: any) {
-		// Tests that exercise SettingsService MUST provide `init.settings`;
-		// otherwise the call surfaces as a clear runtime error rather than
-		// a silent default.
+		// Default returns an empty singleton — tests that need specific
+		// `default_language` / `project_name` values override via
+		// `init.settings`.
 		return {
-			readSingleton: init.settings!.readSingleton,
+			readSingleton: init.settings?.readSingleton ?? (async () => ({})),
 		};
 	}
 

@@ -8,8 +8,9 @@ import {
 	VARIABLES_COLLECTION,
 } from './constants';
 import { ALL_COLLECTIONS, ALL_RELATIONS } from './schema';
-import { SEED_LANGUAGES, SEED_TEMPLATES, SEED_TRANSLATIONS, SEED_VARIABLES } from './seeds';
+import { SEED_TEMPLATES, SEED_TRANSLATIONS, SEED_VARIABLES } from './seeds';
 import { computeChecksum } from './integrity';
+import { fetchDefaultLang } from './directus';
 import { readTemplateFromDisk, syncTemplateBody } from './sync';
 
 let bootstrapRan = false;
@@ -257,24 +258,40 @@ async function migrateRelationsMeta(
 	}
 }
 
+/**
+ * Seed the `languages` collection. Strategy:
+ *   - If the collection already has rows, skip entirely (admin or a
+ *     prior boot has populated it).
+ *   - Otherwise insert one row for the project's default language
+ *     (`directus_settings.default_language`, BCP-47).
+ *   - If the default is not `en-US`, also insert `en-US` so the
+ *     suggested English translation copy has a home.
+ */
 async function seedLanguages(
 	services: ExtensionsServices,
 	schema: SchemaOverview,
+	env: Record<string, unknown>,
 	logger: Pick<Logger, 'info'>,
-): Promise<void> {
+): Promise<string> {
 	const items = new services.ItemsService(LANGUAGES_COLLECTION, {
 		schema,
 		accountability: null,
 	});
-	for (const lang of SEED_LANGUAGES) {
-		const existing = await items.readByQuery({
-			filter: { code: { _eq: lang.code } },
-			limit: 1,
-		});
-		if (existing.length > 0) continue;
-		await items.createOne(lang);
-		logger.info(`[i18n-email] Seeded language ${lang.code}.`);
+	const defaultLang = await fetchDefaultLang(services, schema, env);
+	const existing = await items.readByQuery({ limit: 1 });
+	if (existing.length > 0) {
+		logger.info(
+			`[i18n-email] Languages collection already populated — skipping seed (default lang resolved as ${defaultLang}).`,
+		);
+		return defaultLang;
 	}
+	await items.createOne({ code: defaultLang });
+	logger.info(`[i18n-email] Seeded language ${defaultLang} (project default).`);
+	if (defaultLang !== 'en-US') {
+		await items.createOne({ code: 'en-US' });
+		logger.info('[i18n-email] Seeded language en-US (English suggested copy fallback).');
+	}
+	return defaultLang;
 }
 
 /**
@@ -334,8 +351,19 @@ async function seedTemplates(
 	return insertedOrExisting;
 }
 
+/**
+ * Seed translation rows. For each protected template:
+ *   - Insert one empty row for the project's default language
+ *     (`subject: ''`, `from_name: null`, `strings: {}`) so admins fill
+ *     in their primary-language copy themselves.
+ *   - If the default is not `en-US`, also insert the English
+ *     suggested-copy row from `SEED_TRANSLATIONS` so there's a
+ *     working fallback out of the box.
+ * Skip any (template, language) pair that already has a row.
+ */
 async function seedTranslations(
 	templateRows: EmailTemplateRow[],
+	defaultLang: string,
 	services: ExtensionsServices,
 	schema: SchemaOverview,
 	logger: Pick<Logger, 'info' | 'warn'>,
@@ -345,30 +373,57 @@ async function seedTranslations(
 		accountability: null,
 	});
 	const byKey = new Map(templateRows.map((r) => [r.template_key, r]));
-	for (const seed of SEED_TRANSLATIONS) {
-		const parent = byKey.get(seed.template_key);
+	const englishSeedByKey = new Map(SEED_TRANSLATIONS.map((s) => [s.template_key, s]));
+
+	async function upsert(
+		templateKey: string,
+		languagesCode: string,
+		payload: { subject: string; from_name: string | null; strings: Record<string, string> },
+		label: string,
+	): Promise<void> {
+		const parent = byKey.get(templateKey);
 		if (!parent || !parent.id) {
 			logger.warn(
-				`[i18n-email] Skipping translation seed for ${seed.template_key}/${seed.languages_code}: parent row missing.`,
+				`[i18n-email] Skipping translation seed for ${templateKey}/${languagesCode}: parent row missing.`,
 			);
-			continue;
+			return;
 		}
 		const existing = await items.readByQuery({
 			filter: {
 				email_templates_id: { _eq: parent.id },
-				languages_code: { _eq: seed.languages_code },
+				languages_code: { _eq: languagesCode },
 			},
 			limit: 1,
 		});
-		if (existing.length > 0) continue;
+		if (existing.length > 0) return;
 		await items.createOne({
 			email_templates_id: parent.id,
-			languages_code: seed.languages_code,
-			subject: seed.subject,
-			from_name: seed.from_name,
-			strings: seed.strings,
+			languages_code: languagesCode,
+			...payload,
 		});
-		logger.info(`[i18n-email] Seeded translation ${seed.template_key}/${seed.languages_code}.`);
+		logger.info(`[i18n-email] Seeded translation ${templateKey}/${languagesCode} (${label}).`);
+	}
+
+	for (const tpl of templateRows) {
+		// Empty placeholder for the project's default language.
+		await upsert(
+			tpl.template_key,
+			defaultLang,
+			{ subject: '', from_name: null, strings: {} },
+			'empty default-lang placeholder',
+		);
+		// English suggested copy when the default is not English.
+		if (defaultLang !== 'en-US') {
+			const seed = englishSeedByKey.get(tpl.template_key);
+			if (seed) {
+				await upsert(
+					tpl.template_key,
+					'en-US',
+					{ subject: seed.subject, from_name: seed.from_name, strings: seed.strings },
+					'English suggested copy',
+				);
+			}
+		}
 	}
 }
 
@@ -412,6 +467,7 @@ export async function runBootstrap(
 	templatesPath: string,
 	services: ExtensionsServices,
 	getSchema: () => Promise<SchemaOverview>,
+	env: Record<string, unknown>,
 	logger: Pick<Logger, 'info' | 'warn' | 'error'>,
 ): Promise<void> {
 	if (bootstrapRan) return;
@@ -433,9 +489,9 @@ export async function runBootstrap(
 			schema = await getSchema();
 			await migrateRelationsMeta(services, schema, logger);
 			schema = await getSchema();
-			await seedLanguages(services, schema, logger);
+			const defaultLang = await seedLanguages(services, schema, env, logger);
 			const templateRows = await seedTemplates(templatesPath, services, schema, logger);
-			await seedTranslations(templateRows, services, schema, logger);
+			await seedTranslations(templateRows, defaultLang, services, schema, logger);
 			await seedVariables(services, schema, logger);
 			// Flush each template body to disk so Directus's MailService can render it.
 			for (const row of templateRows) {

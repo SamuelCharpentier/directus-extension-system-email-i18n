@@ -1,4 +1,4 @@
-import type { SeedLanguage, SeedTemplate, SeedTranslation, SeedVariable } from './types';
+import type { SeedTemplate, SeedTranslation, SeedVariable } from './types';
 import { ADMIN_ERROR_KEY, BASE_LAYOUT_KEY } from './constants';
 
 // ─────────────────────────── Default Liquid bodies ───────────────────────────
@@ -72,12 +72,6 @@ export const DEFAULT_BODY_ADMIN_ERROR = `{% layout "base" %}
 {% endblock %}
 `;
 
-// ─────────────────────────── Languages ───────────────────────────
-export const SEED_LANGUAGES: SeedLanguage[] = [
-	{ code: 'en', name: 'English', direction: 'ltr' },
-	{ code: 'fr', name: 'Français', direction: 'ltr' },
-];
-
 // ─────────────────────────── Template rows (language-agnostic) ───────────────────────────
 export const SEED_TEMPLATES: SeedTemplate[] = [
 	{
@@ -114,26 +108,17 @@ export const SEED_TEMPLATES: SeedTemplate[] = [
 	},
 ];
 
-// ─────────────────────────── Translations (per template × language) ───────────────────────────
+// ─────────────────────────── Translations (per template, English suggested copy) ───────────────────────────
+// Bootstrap seeds these as a starter for the `en-US` translation row
+// when the project's default language is not English. When English IS
+// the project default, we skip this copy and seed an empty placeholder
+// row so administrators write their own subject + strings rather than
+// editing-out the suggested defaults.
 export const SEED_TRANSLATIONS: SeedTranslation[] = [
 	// base layout strings
 	{
 		template_key: BASE_LAYOUT_KEY,
-		languages_code: 'fr',
-		subject: '',
-		from_name: 'Votre organisation',
-		strings: {
-			footer_note:
-				"Si ce message ne vous concerne pas, vous pouvez l'ignorer ou nous contacter.",
-			org_name: 'Votre organisation',
-			org_address: '123, rue Exemple, Ville, Pays',
-			org_url: 'exemple.com',
-			lang: 'fr',
-		},
-	},
-	{
-		template_key: BASE_LAYOUT_KEY,
-		languages_code: 'en',
+		languages_code: 'en-US',
 		subject: '',
 		from_name: 'Your Organization',
 		strings: {
@@ -148,19 +133,7 @@ export const SEED_TRANSLATIONS: SeedTranslation[] = [
 	// password-reset
 	{
 		template_key: 'password-reset',
-		languages_code: 'fr',
-		subject: 'Demande de réinitialisation du mot de passe',
-		from_name: null,
-		strings: {
-			heading: 'Réinitialiser votre mot de passe',
-			body: "Nous avons reçu une demande de réinitialisation du mot de passe pour votre compte. Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer ce message.",
-			cta: 'Réinitialiser mon mot de passe',
-			expiry_notice: 'Important : Ce lien expirera dans 24 heures.',
-		},
-	},
-	{
-		template_key: 'password-reset',
-		languages_code: 'en',
+		languages_code: 'en-US',
 		subject: 'Password Reset Request',
 		from_name: null,
 		strings: {
@@ -174,18 +147,7 @@ export const SEED_TRANSLATIONS: SeedTranslation[] = [
 	// user-invitation
 	{
 		template_key: 'user-invitation',
-		languages_code: 'fr',
-		subject: 'Vous avez été invité(e)',
-		from_name: null,
-		strings: {
-			heading: 'Vous avez été invité(e)!',
-			body: 'Vous avez été invité(e) à rejoindre notre plateforme. Cliquez sur le bouton ci-dessous pour accepter cette invitation.',
-			cta: "Accepter l'invitation",
-		},
-	},
-	{
-		template_key: 'user-invitation',
-		languages_code: 'en',
+		languages_code: 'en-US',
 		subject: 'You have been invited',
 		from_name: null,
 		strings: {
@@ -198,18 +160,7 @@ export const SEED_TRANSLATIONS: SeedTranslation[] = [
 	// user-registration
 	{
 		template_key: 'user-registration',
-		languages_code: 'fr',
-		subject: 'Vérifiez votre adresse courriel',
-		from_name: null,
-		strings: {
-			heading: 'Vérifiez votre adresse courriel',
-			body: 'Merci de vous être inscrit(e). Pour compléter votre inscription, veuillez vérifier votre adresse courriel en cliquant sur le lien ci-dessous.',
-			cta: 'Vérifier mon courriel',
-		},
-	},
-	{
-		template_key: 'user-registration',
-		languages_code: 'en',
+		languages_code: 'en-US',
 		subject: 'Verify your email address',
 		from_name: null,
 		strings: {
@@ -222,20 +173,7 @@ export const SEED_TRANSLATIONS: SeedTranslation[] = [
 	// admin-error
 	{
 		template_key: ADMIN_ERROR_KEY,
-		languages_code: 'fr',
-		subject: '[Directus] Échec d’envoi de courriel : {{ reason }}',
-		from_name: null,
-		strings: {
-			heading: 'Échec d’envoi de courriel',
-			body: "L'extension i18n-email a rencontré une erreur lors du traitement d'un envoi. Veuillez examiner le contexte ci-dessous.",
-			reason_label: 'Motif',
-			context_label: 'Contexte',
-			timestamp_label: 'Horodatage',
-		},
-	},
-	{
-		template_key: ADMIN_ERROR_KEY,
-		languages_code: 'en',
+		languages_code: 'en-US',
 		subject: '[Directus] Email dispatch failure: {{ reason }}',
 		from_name: null,
 		strings: {

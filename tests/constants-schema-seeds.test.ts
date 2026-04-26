@@ -18,7 +18,6 @@ import {
 	EMAIL_TEMPLATE_SYNC_AUDIT_COLLECTION,
 } from '../src/schema';
 import {
-	SEED_LANGUAGES,
 	SEED_TEMPLATES,
 	SEED_TRANSLATIONS,
 	SEED_VARIABLES,
@@ -50,6 +49,13 @@ describe('schema', () => {
 		expect(ALL_COLLECTIONS).toContain(EMAIL_TEMPLATE_VARIABLES_COLLECTION);
 		expect(ALL_COLLECTIONS).toContain(EMAIL_TEMPLATE_SYNC_AUDIT_COLLECTION);
 	});
+	it('languages collection has only `code` with system-language interface', () => {
+		const fields = LANGUAGES_COLLECTION_PAYLOAD.fields;
+		expect(fields.map((f) => f.field)).toEqual(['code']);
+		const codeField = fields[0]!;
+		expect((codeField.meta as any)?.interface).toBe('system-language');
+		expect((codeField.schema as any)?.is_primary_key).toBe(true);
+	});
 	it('defines body + translations alias on email_templates', () => {
 		const fields = EMAIL_TEMPLATES_COLLECTION.fields;
 		expect(fields.some((f) => f.field === 'body' && f.type === 'text')).toBe(true);
@@ -69,8 +75,7 @@ describe('schema', () => {
 });
 
 describe('seeds', () => {
-	it('ships languages and templates', () => {
-		expect(SEED_LANGUAGES.map((l) => l.code).sort()).toEqual(['en', 'fr']);
+	it('ships templates for every protected key', () => {
 		const keys = SEED_TEMPLATES.map((t) => t.template_key).sort();
 		expect(keys).toEqual(
 			[
@@ -86,14 +91,14 @@ describe('seeds', () => {
 		const base = SEED_TEMPLATES.find((t) => t.template_key === 'base');
 		expect(base?.category).toBe('layout');
 	});
-	it('provides translations for each template × language', () => {
+	it('ships only English (en-US) suggested translations — one per template', () => {
+		const codes = new Set(SEED_TRANSLATIONS.map((t) => t.languages_code));
+		expect([...codes]).toEqual(['en-US']);
 		for (const t of SEED_TEMPLATES) {
-			for (const lang of ['en', 'fr']) {
-				const found = SEED_TRANSLATIONS.find(
-					(tr) => tr.template_key === t.template_key && tr.languages_code === lang,
-				);
-				expect(found, `${t.template_key}/${lang}`).toBeTruthy();
-			}
+			const found = SEED_TRANSLATIONS.find(
+				(tr) => tr.template_key === t.template_key && tr.languages_code === 'en-US',
+			);
+			expect(found, `${t.template_key}/en-US`).toBeTruthy();
 		}
 	});
 	it('exposes variable registry with required url/reason/context/timestamp', () => {

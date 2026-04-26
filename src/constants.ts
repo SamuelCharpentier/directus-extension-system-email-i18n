@@ -19,8 +19,7 @@ export const PROTECTED_TEMPLATE_KEYS = [
 	BASE_LAYOUT_KEY,
 ] as const;
 
-export const DEFAULT_SUPPORTED_LANGUAGES = ['fr', 'en'] as const;
-export const DEFAULT_FALLBACK_LANG = 'en';
+export const DEFAULT_FALLBACK_LANG = 'en-US';
 
 export const TEMPLATE_CATEGORIES = [
 	'system',

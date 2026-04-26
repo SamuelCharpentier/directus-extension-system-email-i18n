@@ -1,5 +1,10 @@
 import type { ExtensionsServices, SchemaOverview } from '@directus/types';
-import { TEMPLATES_COLLECTION, TRANSLATIONS_COLLECTION, VARIABLES_COLLECTION } from './constants';
+import {
+	DEFAULT_FALLBACK_LANG,
+	TEMPLATES_COLLECTION,
+	TRANSLATIONS_COLLECTION,
+	VARIABLES_COLLECTION,
+} from './constants';
 import type {
 	EmailTemplateRow,
 	EmailTemplateTranslationRow,
@@ -7,12 +12,8 @@ import type {
 	RecipientUser,
 } from './types';
 
-const HARDCODED_FALLBACK_LANG = 'en';
-
-function primaryTag(lang: unknown): string | null {
-	if (typeof lang !== 'string' || lang.length === 0) return null;
-	const [primary] = lang.split('-');
-	return primary || null;
+function normaliseLang(lang: unknown): string | null {
+	return typeof lang === 'string' && lang.length > 0 ? lang : null;
 }
 
 export async function fetchDefaultLang(
@@ -22,12 +23,10 @@ export async function fetchDefaultLang(
 ): Promise<string> {
 	const settings = new services.SettingsService({ schema, accountability: null });
 	const result = await settings.readSingleton({ fields: ['default_language'] });
-	const primary = primaryTag(result['default_language']);
-	const envFallback =
-		typeof env['I18N_EMAIL_FALLBACK_LANG'] === 'string'
-			? (env['I18N_EMAIL_FALLBACK_LANG'] as string)
-			: HARDCODED_FALLBACK_LANG;
-	return primary ?? envFallback;
+	const settingsLang = normaliseLang(result['default_language']);
+	if (settingsLang) return settingsLang;
+	const envLang = normaliseLang(env['I18N_EMAIL_FALLBACK_LANG']);
+	return envLang ?? DEFAULT_FALLBACK_LANG;
 }
 
 export async function fetchUserLang(
@@ -41,7 +40,7 @@ export async function fetchUserLang(
 		fields: ['language'],
 		limit: 1,
 	});
-	return primaryTag(results[0]?.['language']);
+	return normaliseLang(results[0]?.['language']);
 }
 
 export async function fetchProjectName(
@@ -107,11 +106,27 @@ export async function fetchTranslationRow(
 
 /**
  * Resolve a template row + its best-fit translation for the effective
- * language, falling back to the default language if needed. Returns
- * null when the template itself is missing; returns
+ * language, falling back to the default language if needed. A
+ * translation row is treated as "no usable translation" (and the
+ * fallback chain continues) when its `subject` is empty AND its
+ * `strings` map is null/undefined/empty — this is the empty
+ * placeholder shape the bootstrap seeds for the project's default
+ * language. Returns null when the template itself is missing; returns
  * `{ row, translation: null }` when the template exists but has no
- * translation in either language.
+ * usable translation in either language.
  */
+function isUsableTranslation(t: EmailTemplateTranslationRow | null): boolean {
+	if (!t) return false;
+	const hasSubject = typeof t.subject === 'string' && t.subject.length > 0;
+	const strings = t.strings;
+	const hasStrings =
+		strings !== null &&
+		strings !== undefined &&
+		typeof strings === 'object' &&
+		Object.keys(strings).length > 0;
+	return hasSubject || hasStrings;
+}
+
 export async function fetchTemplateWithTranslation(
 	templateKey: string,
 	effectiveLang: string,
@@ -122,7 +137,7 @@ export async function fetchTemplateWithTranslation(
 	const row = await fetchTemplateRow(templateKey, services, schema);
 	if (!row || !row.id) return null;
 	let translation = await fetchTranslationRow(row.id, effectiveLang, services, schema);
-	if (!translation && effectiveLang !== defaultLang) {
+	if (!isUsableTranslation(translation) && effectiveLang !== defaultLang) {
 		translation = await fetchTranslationRow(row.id, defaultLang, services, schema);
 	}
 	return { row, translation };

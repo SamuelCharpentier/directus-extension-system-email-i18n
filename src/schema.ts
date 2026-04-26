@@ -64,12 +64,18 @@ const updatedAtField: FieldPayload = {
 };
 
 // ─────────────────────────── languages ───────────────────────────
+// Single-field collection. The `code` field uses Directus's built-in
+// `system-language` interface — the same dropdown driving
+// `directus_settings.default_language` and `directus_users.language`.
+// Codes are BCP-47 (e.g. `en-US`, `fr-FR`); the interface renders the
+// human-readable language + region label automatically, so we don't
+// store a redundant `name` column.
 export const LANGUAGES_COLLECTION_PAYLOAD: CollectionPayload = {
 	collection: LANGUAGES_COLLECTION,
 	meta: {
 		icon: 'translate',
-		note: 'Supported languages for email template translations.',
-		display_template: '{{ name }} ({{ code }})',
+		note: 'Languages available for email template translations. Picks from Directus\'s built-in language list.',
+		display_template: '{{ code }}',
 		sort_field: 'code',
 	},
 	schema: { name: LANGUAGES_COLLECTION },
@@ -78,33 +84,11 @@ export const LANGUAGES_COLLECTION_PAYLOAD: CollectionPayload = {
 			field: 'code',
 			type: 'string',
 			meta: {
-				interface: 'input',
+				interface: 'system-language',
 				required: true,
-				width: 'half',
-				note: 'ISO short language code, e.g. "en" or "fr".',
+				width: 'full',
 			},
 			schema: { is_primary_key: true, is_nullable: false, has_auto_increment: false },
-		},
-		{
-			field: 'name',
-			type: 'string',
-			meta: { interface: 'input', required: true, width: 'half' },
-			schema: { is_nullable: false },
-		},
-		{
-			field: 'direction',
-			type: 'string',
-			meta: {
-				interface: 'select-dropdown',
-				options: {
-					choices: [
-						{ text: 'Left-to-Right', value: 'ltr' },
-						{ text: 'Right-to-Left', value: 'rtl' },
-					],
-				},
-				width: 'half',
-			},
-			schema: { is_nullable: false, default_value: 'ltr' },
 		},
 	],
 };
@@ -183,8 +167,7 @@ export const EMAIL_TEMPLATES_COLLECTION: CollectionPayload = {
 				interface: 'translations',
 				special: ['translations'],
 				options: {
-					languageField: 'name',
-					languageDirectionField: 'direction',
+					languageField: 'code',
 					defaultOpenSplitView: false,
 					userLanguage: true,
 				},
@@ -249,7 +232,7 @@ export const EMAIL_TEMPLATE_TRANSLATIONS_COLLECTION: CollectionPayload = {
 				interface: 'select-dropdown-m2o',
 				special: ['m2o'],
 				display: 'related-values',
-				display_options: { template: '{{ name }} ({{ code }})' },
+				display_options: { template: '{{ code }}' },
 				required: true,
 				width: 'half',
 				hidden: true,

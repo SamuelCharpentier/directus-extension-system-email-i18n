@@ -23,7 +23,7 @@ const hook: HookConfig = ({ filter, action, init }, { services, logger, getSchem
 	// `runBootstrap` promise (it coalesces concurrent calls) and
 	// returns immediately. Errors are logged inside runBootstrap.
 	const kickBootstrap = (): void => {
-		void runBootstrap(templatesPathFromEnv(env), services, getSchema, logger);
+		void runBootstrap(templatesPathFromEnv(env), services, getSchema, env, logger);
 	};
 
 	if (typeof init === 'function') {

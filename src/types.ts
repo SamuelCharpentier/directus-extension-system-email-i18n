@@ -47,8 +47,6 @@ export type EmailTemplateVariableRow = {
 
 export type LanguageRow = {
 	code: string;
-	name: string;
-	direction: 'ltr' | 'rtl';
 };
 
 export type SeedTemplate = {
@@ -76,8 +74,6 @@ export type SeedVariable = {
 
 export type SeedLanguage = {
 	code: string;
-	name: string;
-	direction: 'ltr' | 'rtl';
 };
 
 /** Recipient user info auto-hydrated for protected system emails. */

@@ -20,17 +20,21 @@ describe('runBootstrap', () => {
 	it('creates collections, relations, seeds, flushes bodies', async () => {
 		const s = makeServices();
 		const logger = makeLogger();
-		await runBootstrap(dir, s as any, getSchema, logger);
+		await runBootstrap(dir, s as any, getSchema, {}, logger);
 		// collections
 		expect(s._collectionsCreated.length).toBeGreaterThanOrEqual(5);
 		// relations
 		expect(s._relationsCreated.length).toBe(2);
-		// language seeded
-		expect(s._stores.languages?.find((r: any) => r.code === 'en')).toBeTruthy();
+		// language seeded — project default is en-US (no settings override),
+		// so only one row is created.
+		expect(s._stores.languages?.find((r: any) => r.code === 'en-US')).toBeTruthy();
+		expect(s._stores.languages?.length).toBe(1);
 		// templates seeded
 		expect(s._stores.email_templates?.length).toBe(5);
-		// translations seeded (5 templates × 2 langs)
-		expect(s._stores.email_template_translations?.length).toBe(10);
+		// translations seeded — one empty placeholder per template at the
+		// project default lang (en-US). No English-suggested duplicate
+		// because default IS en-US.
+		expect(s._stores.email_template_translations?.length).toBe(5);
 		// variables seeded
 		expect(s._stores.email_template_variables?.length).toBeGreaterThan(0);
 		// bodies flushed
@@ -43,7 +47,7 @@ describe('runBootstrap', () => {
 		await writeFile(join(dir, 'base.liquid'), 'FROM_DISK', 'utf-8');
 		const s = makeServices();
 		const logger = makeLogger();
-		await runBootstrap(dir, s as any, getSchema, logger);
+		await runBootstrap(dir, s as any, getSchema, {}, logger);
 		const baseRow = s._stores.email_templates?.find((r: any) => r.template_key === 'base');
 		expect(baseRow.body).toBe('FROM_DISK');
 	});
@@ -64,7 +68,7 @@ describe('runBootstrap', () => {
 			},
 		});
 		const logger = makeLogger();
-		await runBootstrap(dir, s as any, getSchema, logger);
+		await runBootstrap(dir, s as any, getSchema, {}, logger);
 		const baseRow = s._stores.email_templates?.find((r: any) => r.template_key === 'base');
 		expect(baseRow.body).toBe('EXISTING');
 	});
@@ -72,9 +76,9 @@ describe('runBootstrap', () => {
 	it('is idempotent on a second call', async () => {
 		const s = makeServices();
 		const logger = makeLogger();
-		await runBootstrap(dir, s as any, getSchema, logger);
+		await runBootstrap(dir, s as any, getSchema, {}, logger);
 		const before = s._stores.email_templates?.length;
-		await runBootstrap(dir, s as any, getSchema, logger);
+		await runBootstrap(dir, s as any, getSchema, {}, logger);
 		expect(s._stores.email_templates?.length).toBe(before);
 	});
 
@@ -82,8 +86,8 @@ describe('runBootstrap', () => {
 		const s = makeServices();
 		const logger = makeLogger();
 		await Promise.all([
-			runBootstrap(dir, s as any, getSchema, logger),
-			runBootstrap(dir, s as any, getSchema, logger),
+			runBootstrap(dir, s as any, getSchema, {}, logger),
+			runBootstrap(dir, s as any, getSchema, {}, logger),
 		]);
 		expect(s._stores.email_templates?.length).toBe(5);
 	});
@@ -92,7 +96,7 @@ describe('runBootstrap', () => {
 		const s = makeServices();
 		(s as any).RelationsService = undefined;
 		const logger = makeLogger();
-		await runBootstrap(dir, s as any, getSchema, logger);
+		await runBootstrap(dir, s as any, getSchema, {}, logger);
 		expect(logger.warn).toHaveBeenCalledWith(
 			expect.stringContaining('RelationsService not available'),
 		);
@@ -109,7 +113,7 @@ describe('runBootstrap', () => {
 			},
 		});
 		const logger = makeLogger();
-		await runBootstrap(dir, s as any, getSchema, logger);
+		await runBootstrap(dir, s as any, getSchema, {}, logger);
 		expect(s._relationsCreated.length).toBe(0);
 	});
 
@@ -125,7 +129,7 @@ describe('runBootstrap', () => {
 			},
 		});
 		const logger = makeLogger();
-		await runBootstrap(dir, s as any, getSchema, logger);
+		await runBootstrap(dir, s as any, getSchema, {}, logger);
 		expect(logger.warn).toHaveBeenCalledWith(
 			expect.stringContaining('Relation create skipped'),
 		);
@@ -138,7 +142,7 @@ describe('runBootstrap', () => {
 			},
 		});
 		const logger = makeLogger();
-		await runBootstrap(dir, s as any, getSchema, logger);
+		await runBootstrap(dir, s as any, getSchema, {}, logger);
 		expect(s._collectionsCreated.length).toBe(0);
 	});
 
@@ -153,14 +157,14 @@ describe('runBootstrap', () => {
 			}
 			return svc;
 		};
-		await runBootstrap(dir, s as any, getSchema, logger);
+		await runBootstrap(dir, s as any, getSchema, {}, logger);
 		expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('parent row missing'));
 	});
 
 	it('exposes inFlight getter while running and null after', async () => {
 		const s = makeServices();
 		const logger = makeLogger();
-		const p = runBootstrap(dir, s as any, getSchema, logger);
+		const p = runBootstrap(dir, s as any, getSchema, {}, logger);
 		expect(__INTERNAL__.inFlight).toBeInstanceOf(Promise);
 		await p;
 		expect(__INTERNAL__.inFlight).toBeNull();
@@ -179,28 +183,52 @@ describe('runBootstrap', () => {
 			},
 		});
 		const logger = makeLogger();
-		await runBootstrap(dir, s as any, getSchema, logger);
+		await runBootstrap(dir, s as any, getSchema, {}, logger);
 		expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('Bootstrap failed'));
 	});
 
-	it('skips re-seeding languages that already exist', async () => {
-		// Simulates a second boot: every seed language is already in the
-		// store, so seedLanguages must NOT call createOne for any of them.
+	it('skips re-seeding languages when collection already has rows', async () => {
+		// Simulates a second boot or admin-managed languages: the collection
+		// is non-empty, so seedLanguages must NOT call createOne.
 		const s = makeServices({
 			items: {
 				languages: {
-					rows: [
-						{ code: 'en', name: 'English', direction: 'ltr' },
-						{ code: 'fr', name: 'Français', direction: 'ltr' },
-					],
+					rows: [{ code: 'es-ES' }],
 				},
 			},
 		});
 		const logger = makeLogger();
-		await runBootstrap(dir, s as any, getSchema, logger);
-		// Still exactly the two we pre-seeded — no duplicates.
-		expect(s._stores.languages?.length).toBe(2);
+		await runBootstrap(dir, s as any, getSchema, {}, logger);
+		// Still exactly the row we pre-seeded — no extras inserted.
+		expect(s._stores.languages?.length).toBe(1);
 		expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('Seeded language'));
+		expect(logger.info).toHaveBeenCalledWith(
+			expect.stringContaining('already populated'),
+		);
+	});
+
+	it('seeds project default + en-US when default differs from en-US', async () => {
+		const s = makeServices({
+			settings: { readSingleton: async () => ({ default_language: 'fr-FR' }) },
+		});
+		const logger = makeLogger();
+		await runBootstrap(dir, s as any, getSchema, {}, logger);
+		const codes = s._stores.languages!.map((r: any) => r.code).sort();
+		expect(codes).toEqual(['en-US', 'fr-FR']);
+		// Each template gets two translation rows: empty fr-FR + suggested en-US.
+		expect(s._stores.email_template_translations?.length).toBe(10);
+		const frBaseRow = s._stores.email_template_translations!.find(
+			(r: any) => r.languages_code === 'fr-FR',
+		);
+		expect(frBaseRow.subject).toBe('');
+		expect(frBaseRow.strings).toEqual({});
+		const enBaseRow = s._stores.email_template_translations!.find(
+			(r: any) =>
+				r.languages_code === 'en-US' &&
+				r.email_templates_id === frBaseRow.email_templates_id,
+		);
+		expect(enBaseRow.from_name).toBe('Your Organization');
+		expect(enBaseRow.strings.org_name).toBe('Your Organization');
 	});
 
 	it('skips re-seeding variables that already exist', async () => {
@@ -222,19 +250,18 @@ describe('runBootstrap', () => {
 			},
 		});
 		const logger = makeLogger();
-		await runBootstrap(dir, s as any, getSchema, logger);
+		await runBootstrap(dir, s as any, getSchema, {}, logger);
 		// No new variable rows added.
 		expect(s._stores.email_template_variables?.length).toBe(6);
 		expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('Seeded variable'));
 	});
 
 	it('skips re-seeding translations that already exist', async () => {
-		// Pre-seed a template row with a known id, plus a translation
-		// row matching one of the SEED_TRANSLATIONS entries. seedTemplates
-		// will reuse the existing template (parent.id === 't-base'), and
-		// seedTranslations' (email_templates_id, languages_code) lookup
-		// must hit the existing row — exercising the skip-when-exists
-		// continue branch — instead of creating a duplicate.
+		// Pre-seed a template row with a known id, plus a translation row
+		// matching the en-US placeholder seedTranslations would otherwise
+		// create. The (email_templates_id, languages_code) lookup must
+		// hit the existing row — exercising the skip-when-exists continue
+		// branch — instead of creating a duplicate.
 		const s = makeServices({
 			items: {
 				email_templates: {
@@ -243,9 +270,9 @@ describe('runBootstrap', () => {
 				email_template_translations: {
 					rows: [
 						{
-							id: 'tr-base-fr',
+							id: 'tr-base-en',
 							email_templates_id: 't-base',
-							languages_code: 'fr',
+							languages_code: 'en-US',
 							subject: '',
 							from_name: 'pre-seeded',
 							strings: { footer_note: 'pre-seeded' },
@@ -255,20 +282,21 @@ describe('runBootstrap', () => {
 			},
 		});
 		const logger = makeLogger();
-		await runBootstrap(dir, s as any, getSchema, logger);
-		// The existing 'base/fr' translation must be untouched (still 1 row
-		// with that pair) and no 'Seeded translation base/fr' info was logged.
-		const baseFrRows = s._stores.email_template_translations!.filter(
-			(r: any) => r.email_templates_id === 't-base' && r.languages_code === 'fr',
+		await runBootstrap(dir, s as any, getSchema, {}, logger);
+		// The existing 'base/en-US' row must be untouched (still 1 row
+		// with that pair) and no 'Seeded translation base/en-US' info
+		// was logged.
+		const baseEnRows = s._stores.email_template_translations!.filter(
+			(r: any) => r.email_templates_id === 't-base' && r.languages_code === 'en-US',
 		);
-		expect(baseFrRows.length).toBe(1);
-		expect(baseFrRows[0]!.from_name).toBe('pre-seeded');
+		expect(baseEnRows.length).toBe(1);
+		expect(baseEnRows[0]!.from_name).toBe('pre-seeded');
 		expect(logger.info).not.toHaveBeenCalledWith(
-			expect.stringContaining('Seeded translation base/fr'),
+			expect.stringContaining('Seeded translation base/en-US'),
 		);
-		// Other translations are still seeded normally.
+		// Other templates still seed their en-US placeholder normally.
 		expect(logger.info).toHaveBeenCalledWith(
-			expect.stringContaining('Seeded translation base/en'),
+			expect.stringContaining('Seeded translation password-reset/en-US'),
 		);
 	});
 
@@ -283,14 +311,14 @@ describe('runBootstrap', () => {
 				},
 			});
 			const logger = makeLogger();
-			await runBootstrap(dir, s as any, getSchema, logger);
+			await runBootstrap(dir, s as any, getSchema, {}, logger);
 			expect(s._fieldsCreated.length).toBe(0);
 			expect(s._fieldsUpdated.length).toBeGreaterThan(0);
 			const translationsUpdate = s._fieldsUpdated.find(
 				(u: any) => u.collection === 'email_templates' && u.field.field === 'translations',
 			);
 			expect(translationsUpdate).toBeTruthy();
-			expect(translationsUpdate.field.meta.options.languageField).toBe('name');
+			expect(translationsUpdate.field.meta.options.languageField).toBe('code');
 		});
 
 		it('creates missing fields on existing collections', async () => {
@@ -305,7 +333,7 @@ describe('runBootstrap', () => {
 				},
 			});
 			const logger = makeLogger();
-			await runBootstrap(dir, s as any, getSchema, logger);
+			await runBootstrap(dir, s as any, getSchema, {}, logger);
 			expect(s._fieldsCreated.length).toBeGreaterThan(0);
 			const tField = s._fieldsCreated.find(
 				(c: any) => c.collection === 'email_templates' && c.field.field === 'translations',
@@ -319,7 +347,7 @@ describe('runBootstrap', () => {
 			});
 			(s as any).FieldsService = undefined;
 			const logger = makeLogger();
-			await runBootstrap(dir, s as any, getSchema, logger);
+			await runBootstrap(dir, s as any, getSchema, {}, logger);
 			expect(logger.warn).toHaveBeenCalledWith(
 				expect.stringContaining('FieldsService not available'),
 			);
@@ -336,7 +364,7 @@ describe('runBootstrap', () => {
 				},
 			});
 			const logger = makeLogger();
-			await runBootstrap(dir, s as any, getSchema, logger);
+			await runBootstrap(dir, s as any, getSchema, {}, logger);
 			expect(logger.warn).toHaveBeenCalledWith(
 				expect.stringContaining('Field migrate skipped'),
 			);
@@ -356,7 +384,7 @@ describe('runBootstrap', () => {
 				},
 			});
 			const logger = makeLogger();
-			await runBootstrap(dir, s as any, getSchema, logger);
+			await runBootstrap(dir, s as any, getSchema, {}, logger);
 			expect(logger.warn).toHaveBeenCalledWith(
 				expect.stringContaining(
 					'email_templates.translations is declared as alias but a real "text" column exists',
@@ -384,7 +412,7 @@ describe('runBootstrap', () => {
 				relations: { readOne: healthyReadOne },
 			});
 			const logger = makeLogger();
-			await runBootstrap(dir, s as any, getSchema, logger);
+			await runBootstrap(dir, s as any, getSchema, {}, logger);
 			expect(s._relationsCreated.length).toBe(0);
 			expect(s._relationsUpdated.length).toBe(2);
 			const fwd = s._relationsUpdated.find((u: any) => u.field === 'email_templates_id');
@@ -424,7 +452,7 @@ describe('runBootstrap', () => {
 				},
 			});
 			const logger = makeLogger();
-			await runBootstrap(dir, s as any, getSchema, logger);
+			await runBootstrap(dir, s as any, getSchema, {}, logger);
 			expect(s._relationsUpdated.length).toBe(0);
 			expect(s._relationsCreated.length).toBe(0);
 		});
@@ -432,7 +460,7 @@ describe('runBootstrap', () => {
 		it('skips migration for relations that do not yet exist', async () => {
 			const s = makeServices();
 			const logger = makeLogger();
-			await runBootstrap(dir, s as any, getSchema, logger);
+			await runBootstrap(dir, s as any, getSchema, {}, logger);
 			// fresh bootstrap: relations were just created, so no migration updates
 			expect(s._relationsUpdated.length).toBe(0);
 		});
@@ -447,7 +475,7 @@ describe('runBootstrap', () => {
 				},
 			});
 			const logger = makeLogger();
-			await runBootstrap(dir, s as any, getSchema, logger);
+			await runBootstrap(dir, s as any, getSchema, {}, logger);
 			expect(logger.warn).toHaveBeenCalledWith(
 				expect.stringContaining('Relation migrate skipped'),
 			);
@@ -464,7 +492,7 @@ describe('runBootstrap', () => {
 				return inst;
 			};
 			const logger = makeLogger();
-			await runBootstrap(dir, s as any, getSchema, logger);
+			await runBootstrap(dir, s as any, getSchema, {}, logger);
 			expect(logger.warn).toHaveBeenCalledWith(
 				expect.stringContaining('updateOne not available'),
 			);
@@ -484,7 +512,7 @@ describe('runBootstrap', () => {
 				},
 			});
 			const logger = makeLogger();
-			await runBootstrap(dir, s as any, getSchema, logger);
+			await runBootstrap(dir, s as any, getSchema, {}, logger);
 			expect(s._relationsCreated.length).toBe(0);
 			expect(s._relationsUpdated.length).toBe(0);
 			expect(logger.warn).toHaveBeenCalledWith(
@@ -504,7 +532,7 @@ describe('runBootstrap', () => {
 				},
 			});
 			const logger = makeLogger();
-			await runBootstrap(dir, s as any, getSchema, logger);
+			await runBootstrap(dir, s as any, getSchema, {}, logger);
 			expect(s._relationsCreated.length).toBe(0);
 			expect(logger.warn).toHaveBeenCalledWith(
 				expect.stringContaining('stale directus_relations row'),
