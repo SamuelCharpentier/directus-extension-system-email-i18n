@@ -4,7 +4,7 @@ Database-backed, multilingual transactional email for Directus. Translate system
 
 - **DB is the source of truth.** Templates live in `email_templates`; admins edit them in the Data Studio.
 - **Filesystem is a rendering cache.** Locale JSON files are auto-synced to `EMAIL_TEMPLATES_PATH/locales/<lang>.json` so Directus's Liquid renderer can consume them.
-- **Idempotent bootstrap.** Required collections are created on first load. Protected system templates are seeded in FR + EN and cannot be deleted.
+- **Idempotent bootstrap.** Required collections are created on first load. Protected system templates are seeded with an empty placeholder for your project's default language, plus an English-suggested copy when that default isn't `en-US`.
 - **Variable registry.** Declare required variables per template; missing variables abort the send and notify admins.
 - **Admin alerting.** Any dispatch failure sends an `admin-error` email to every admin-role user.
 - **Safe by default.** Unknown template names pass through untouched, so existing raw Directus templates keep working.
@@ -25,9 +25,10 @@ Copy the built extension into your Directus `extensions/` directory (or use `dir
 
 On first start the extension will:
 
-1. Create `email_templates`, `email_template_variables`, and `email_template_sync_audit` collections if missing.
-2. Seed protected system templates (`password-reset`, `user-invitation`, `user-registration`, `admin-error`, `base`) in FR and EN.
-3. Sync locale JSON files to `EMAIL_TEMPLATES_PATH/locales/<lang>.json`.
+1. Create the `languages`, `email_templates`, `email_template_translations`, `email_template_variables`, and `email_template_sync_audit` collections if missing. The `languages.code` field uses Directus's built-in **language picker** — the same dropdown that drives `directus_settings.default_language` and `directus_users.language`, so codes stay BCP-47 (e.g. `en-US`, `fr-FR`).
+2. Seed languages from your project's default language (`directus_settings.default_language`). If the default is not `en-US`, an `en-US` row is also added so the suggested English copy has a home. If the `languages` collection is already populated (admin pre-seeded, or imported from Directus's translations utility), bootstrap leaves it alone.
+3. Seed protected system templates (`password-reset`, `user-invitation`, `user-registration`, `admin-error`, `base`) with one empty translation for the project's default language plus an English-suggested translation when that default isn't `en-US`.
+4. Sync each template body to `EMAIL_TEMPLATES_PATH/<template_key>.liquid`.
 
 <br />
 
@@ -39,8 +40,8 @@ On first start the extension will:
 
 The extension registers an `email.send` filter. For every outgoing email:
 
-1. Resolves the recipient's language (user profile → `directus_settings.default_language` → `I18N_EMAIL_FALLBACK_LANG` → `en`).
-2. Fetches `email_templates` where `template_key = <template name>` AND `language = <effective lang>`. Falls back to the default language if the row is missing.
+1. Resolves the recipient's language (user profile → `directus_settings.default_language` → `I18N_EMAIL_FALLBACK_LANG` → `en-US`). All codes are full BCP-47 (e.g. `fr-FR`, `en-US`).
+2. Fetches the active `email_templates` row plus its `email_template_translations` row for the effective language. Falls back to the default-language translation when the effective-language row is missing or is the empty placeholder (subject blank + `strings: {}`).
 3. Validates required variables from `email_template_variables`. Missing variables abort the send and trigger an admin notification.
 4. Injects `subject`, `from_name`, and the row's `strings` into the email as `template.data.i18n.*`.
 5. Also injects the `base` layout strings as `template.data.i18n.base.*` (for shared footer/header copy).
@@ -67,7 +68,7 @@ Extension-specific:
 
 | Variable                        | Default | Description                                                                                               |
 | ------------------------------- | ------- | --------------------------------------------------------------------------------------------------------- |
-| `I18N_EMAIL_FALLBACK_LANG`      | `en`    | Language used when `directus_settings.default_language` is null.                                          |
+| `I18N_EMAIL_FALLBACK_LANG`      | `en-US` | BCP-47 language tag used when `directus_settings.default_language` is null.                               |
 | `I18N_EMAIL_FALLBACK_FROM_NAME` | —       | Display name used when a template row has no `from_name`. Falls back to `directus_settings.project_name`. |
 
 <br />
@@ -106,7 +107,7 @@ The `.liquid` templates are yours — copy the files under [examples/templates/]
 | ---------------- | ------- | ------------------------------------------------------------------ |
 | `id`             | uuid    | PK                                                                 |
 | `template_key`   | string  | e.g. `password-reset`, `base`, or your custom key                  |
-| `language`       | string  | ISO short code (`fr`, `en`, …)                                     |
+| `language`       | string  | BCP-47 tag (`en-US`, `fr-FR`, …)                                   |
 | `category`       | enum    | `system` \| `transactional` \| `marketing` \| `custom`             |
 | `subject`        | string  | Email subject. Empty for the `base` layout.                        |
 | `from_name`      | string? | Sender display name override                                       |
