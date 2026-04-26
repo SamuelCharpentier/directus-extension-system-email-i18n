@@ -2,23 +2,31 @@ import { vi } from 'vitest';
 
 export type ItemsStore = Record<string, any[]>;
 
-/** Configurable ItemsService-alike for a single collection. */
+/**
+ * ItemsService surface actually exercised by src/. Anything else is
+ * trimmed — adding a new method here means src/ should be calling it.
+ */
 export type ItemsServiceMock = {
 	readByQuery: (query?: any) => Promise<any[]>;
-	readOne: (id: string | number, query?: any) => Promise<any>;
 	readMany: (keys: (string | number)[], query?: any) => Promise<any[]>;
 	createOne: (data: any) => Promise<string | number>;
-	createMany: (rows: any[]) => Promise<(string | number)[]>;
 	updateOne: (id: string | number, data: any) => Promise<string | number>;
-	deleteOne: (id: string | number) => Promise<void>;
 };
 
-export type CollectionItemsInit = Partial<ItemsServiceMock> & { rows?: any[] };
+export type CollectionItemsInit = {
+	rows?: any[];
+	/** Override the default in-memory readByQuery (e.g. admin-alert tests). */
+	readByQuery?: ItemsServiceMock['readByQuery'];
+	/** Override createOne to simulate write failures (sync audit tests). */
+	createOne?: ItemsServiceMock['createOne'];
+	/** Override updateOne to simulate write failures (sync metadata tests). */
+	updateOne?: ItemsServiceMock['updateOne'];
+};
 
 export type ServicesInit = {
 	items?: Record<string, CollectionItemsInit>;
-	settings?: Partial<{ readSingleton: (q?: any) => Promise<any> }>;
-	mail?: Partial<{ send: (opts: any) => Promise<any> }>;
+	settings?: { readSingleton: (q?: any) => Promise<any> };
+	mail?: { send: (opts: any) => Promise<any> };
 	collections?: Partial<{
 		readOne: (c: string) => Promise<any>;
 		createOne: (payload: any) => Promise<any>;
@@ -27,7 +35,6 @@ export type ServicesInit = {
 		readOne: (c: string, f: string) => Promise<any>;
 		createOne: (payload: any) => Promise<any>;
 		updateOne: (c: string, f: string, data: any) => Promise<any>;
-		deleteOne: (c: string, f: string) => Promise<any>;
 	}>;
 	fields?: Partial<{
 		readOne: (c: string, f: string) => Promise<any>;
@@ -48,7 +55,6 @@ export type ServicesMock = {
 	_collectionsCreated: any[];
 	_relationsCreated: any[];
 	_relationsUpdated: any[];
-	_relationsDeleted: any[];
 	_fieldsCreated: any[];
 	_fieldsUpdated: any[];
 };
@@ -74,17 +80,12 @@ const matchFilter = (row: any, filter: any): boolean => {
 let idCounter = 1;
 const nextId = () => `id-${idCounter++}`;
 
-export function resetIdCounter(): void {
-	idCounter = 1;
-}
-
 export function makeServices(init: ServicesInit = {}): ServicesMock {
 	const stores: ItemsStore = {};
 	const mailSends: any[] = [];
 	const collectionsCreated: any[] = [];
 	const relationsCreated: any[] = [];
 	const relationsUpdated: any[] = [];
-	const relationsDeleted: any[] = [];
 	const fieldsCreated: any[] = [];
 	const fieldsUpdated: any[] = [];
 
@@ -97,67 +98,41 @@ export function makeServices(init: ServicesInit = {}): ServicesMock {
 		const rows = () => stores[collection]!;
 		const cfg = init.items?.[collection] ?? {};
 
-		const api: ItemsServiceMock = {
-			readByQuery: cfg.readByQuery
-				? cfg.readByQuery
-				: async (query?: any) => {
-						const filter = query?.filter;
-						const filtered = rows().filter((r) => matchFilter(r, filter));
-						const limit = query?.limit;
-						if (typeof limit === 'number' && limit > 0) return filtered.slice(0, limit);
-						return filtered;
-					},
-			readOne: cfg.readOne
-				? cfg.readOne
-				: async (id: string | number) => {
-						const found = rows().find((r) => String(r.id) === String(id));
-						if (!found) throw new Error(`not found: ${id}`);
-						return found;
-					},
-			readMany: cfg.readMany
-				? cfg.readMany
-				: async (keys: (string | number)[]) =>
-						rows().filter((r) => keys.map(String).includes(String(r.id))),
-			createOne: cfg.createOne
-				? cfg.createOne
-				: async (data: any) => {
-						const id = data.id ?? nextId();
-						rows().push({ ...data, id });
-						return id;
-					},
-			createMany: cfg.createMany
-				? cfg.createMany
-				: async (inputs: any[]) => {
-						const ids: (string | number)[] = [];
-						for (const input of inputs) {
-							const id = input.id ?? nextId();
-							rows().push({ ...input, id });
-							ids.push(id);
-						}
-						return ids;
-					},
-			updateOne: cfg.updateOne
-				? cfg.updateOne
-				: async (id: string | number, data: any) => {
-						const idx = rows().findIndex((r) => String(r.id) === String(id));
-						if (idx >= 0) rows()[idx] = { ...rows()[idx], ...data };
-						return id;
-					},
-			deleteOne: cfg.deleteOne
-				? cfg.deleteOne
-				: async (id: string | number) => {
-						const idx = rows().findIndex((r) => String(r.id) === String(id));
-						if (idx >= 0) rows().splice(idx, 1);
-					},
+		return {
+			readByQuery:
+				cfg.readByQuery ??
+				(async (query?: any) => {
+					const filter = query?.filter;
+					const filtered = rows().filter((r) => matchFilter(r, filter));
+					const limit = query?.limit;
+					if (typeof limit === 'number' && limit > 0) return filtered.slice(0, limit);
+					return filtered;
+				}),
+			readMany: async (keys: (string | number)[]) =>
+				rows().filter((r) => keys.map(String).includes(String(r.id))),
+			createOne:
+				cfg.createOne ??
+				(async (data: any) => {
+					const id = data.id ?? nextId();
+					rows().push({ ...data, id });
+					return id;
+				}),
+			updateOne:
+				cfg.updateOne ??
+				(async (id: string | number, data: any) => {
+					const idx = rows().findIndex((r) => String(r.id) === String(id));
+					if (idx >= 0) rows()[idx] = { ...rows()[idx], ...data };
+					return id;
+				}),
 		};
-		return api;
 	}
 
 	function SettingsService(_opts: any) {
+		// Tests that exercise SettingsService MUST provide `init.settings`;
+		// otherwise the call surfaces as a clear runtime error rather than
+		// a silent default.
 		return {
-			readSingleton:
-				init.settings?.readSingleton ??
-				(async () => ({ default_language: 'en', project_name: 'Test Project' })),
+			readSingleton: init.settings!.readSingleton,
 		};
 	}
 
@@ -207,12 +182,6 @@ export function makeServices(init: ServicesInit = {}): ServicesMock {
 					relationsUpdated.push({ collection, field, data });
 					return { collection, field };
 				}),
-			deleteOne:
-				init.relations?.deleteOne ??
-				(async (collection: string, field: string) => {
-					relationsDeleted.push({ collection, field });
-					return { collection, field };
-				}),
 		};
 	}
 
@@ -250,7 +219,6 @@ export function makeServices(init: ServicesInit = {}): ServicesMock {
 		_collectionsCreated: collectionsCreated,
 		_relationsCreated: relationsCreated,
 		_relationsUpdated: relationsUpdated,
-		_relationsDeleted: relationsDeleted,
 		_fieldsCreated: fieldsCreated,
 		_fieldsUpdated: fieldsUpdated,
 	};

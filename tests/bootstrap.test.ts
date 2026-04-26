@@ -386,7 +386,6 @@ describe('runBootstrap', () => {
 			const logger = makeLogger();
 			await runBootstrap(dir, s as any, getSchema, logger);
 			expect(s._relationsCreated.length).toBe(0);
-			expect(s._relationsDeleted.length).toBe(0);
 			expect(s._relationsUpdated.length).toBe(2);
 			const fwd = s._relationsUpdated.find((u: any) => u.field === 'email_templates_id');
 			expect(fwd).toBeTruthy();
@@ -427,7 +426,6 @@ describe('runBootstrap', () => {
 			const logger = makeLogger();
 			await runBootstrap(dir, s as any, getSchema, logger);
 			expect(s._relationsUpdated.length).toBe(0);
-			expect(s._relationsDeleted.length).toBe(0);
 			expect(s._relationsCreated.length).toBe(0);
 		});
 
@@ -437,7 +435,6 @@ describe('runBootstrap', () => {
 			await runBootstrap(dir, s as any, getSchema, logger);
 			// fresh bootstrap: relations were just created, so no migration updates
 			expect(s._relationsUpdated.length).toBe(0);
-			expect(s._relationsDeleted.length).toBe(0);
 		});
 
 		it('logs and continues when relation migration throws per-relation', async () => {
@@ -488,7 +485,6 @@ describe('runBootstrap', () => {
 			});
 			const logger = makeLogger();
 			await runBootstrap(dir, s as any, getSchema, logger);
-			expect(s._relationsDeleted.length).toBe(0);
 			expect(s._relationsCreated.length).toBe(0);
 			expect(s._relationsUpdated.length).toBe(0);
 			expect(logger.warn).toHaveBeenCalledWith(
@@ -509,7 +505,6 @@ describe('runBootstrap', () => {
 			});
 			const logger = makeLogger();
 			await runBootstrap(dir, s as any, getSchema, logger);
-			expect(s._relationsDeleted.length).toBe(0);
 			expect(s._relationsCreated.length).toBe(0);
 			expect(logger.warn).toHaveBeenCalledWith(
 				expect.stringContaining('stale directus_relations row'),
